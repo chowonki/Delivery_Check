@@ -84,6 +84,15 @@ function createFuelMatcher(core, originalMatch, getOverride = () => null) {
       const targetDate=requestedDate || latestDate;
       const candidates=unique.filter(r=>dateOf(r)===targetDate);
       let chosen=candidates[candidates.length-1],selectionReason='';
+      // Spreadsheet row order is not an event timestamp: Openmile may list
+      // a cancelled attempt after an active replacement on the same date.
+      if(chosen?.vendor==='B' && /취소|캔슬|cancel/i.test(chosen.state||'')){
+        const active=candidates.filter(r=>r.vendor==='B' && originalMatch([v],[{records:[r]}])[0].rawStates.includes('탁송 중'));
+        if(active.length){
+          chosen=active[active.length-1];
+          selectionReason='동일 기준일 오픈마일 진행·취소 기록 공존: 진행 건 적용, 취소 건은 조회 근거에 보존 (행 순서는 진행 시각을 뜻하지 않음)';
+        }
+      }
       if(chosen?.vendor==='B' && !core.complete(chosen) && !/취소|캔슬|cancel/i.test(chosen.state||'')){
         const completed=candidates.filter(r=>r.vendor==='B'&&core.complete(r));
         if(completed.length){chosen=completed[completed.length-1];selectionReason='동일 기준일 오픈마일 기록 중 완료 기록 우선 적용';}
