@@ -155,7 +155,12 @@
     core.values = r => {const values=originalValues(r);values[8]=core.notes(r);return values;};
     core.textExport = rows => '\ufeff' + [core.headers, ...core.unique(rows).map(core.values)].map(row => row.map(v => String(v ?? '').replace(/[\t\r\n]/g,' ')).join('\t')).join('\r\n');
 
-    core.includes = (r, filter) => originalIncludes(r, filter) && (carrierFilter === 'all' || !!r.carrier === (carrierFilter === 'carrier')) && (processing === 'all' || processed.has(key(r)) === (processing === 'done'));
+    core.includes = (r, filter) => (filter === 'completed' ? (r.rawStates || []).includes('탁송완료') : originalIncludes(r, filter)) && (carrierFilter === 'all' || !!r.carrier === (carrierFilter === 'carrier')) && (processing === 'all' || processed.has(key(r)) === (processing === 'done'));
+    const completedStat = doc.querySelector('.stats [data-filter="missing"]');
+    completedStat.dataset.filter='completed';
+    completedStat.querySelector('span').innerHTML='<i class="dot green"></i>완료 차량';
+    const completedTab = doc.querySelector('.tabs [data-filter="missing"]');
+    completedTab.dataset.filter='completed';completedTab.textContent='완료 차량';
     const progressStat = doc.createElement('button');
     progressStat.type='button';progressStat.className='stat';progressStat.id='progressStat';
     progressStat.innerHTML='<span><i class="dot orange"></i>진행 중</span><strong id="statProgress">0<small>대</small></strong>';
@@ -187,6 +192,10 @@
     function redraw() {$('search').dispatchEvent(new frame.contentWindow.Event('input'));enhance();}
     function updateControls() {
       const visible=visibleRows(),rows=selectedRows(),all=core.unique(app.getResults());
+      const completedCount=all.filter(r=>(r.rawStates||[]).includes('탁송완료')).length;
+      $('statMissing').replaceChildren(doc.createTextNode(completedCount.toLocaleString('ko-KR')));
+      const completedUnit=doc.createElement('small');completedUnit.textContent='대';$('statMissing').append(completedUnit);
+      completedStat.setAttribute('aria-label','완료 차량 '+completedCount+'대 보기');
       const progressCount=all.filter(r=>(r.rawStates||[]).includes('탁송 중')).length;
       $('statProgress').replaceChildren(doc.createTextNode(progressCount.toLocaleString('ko-KR')));
       const unit=doc.createElement('small');unit.textContent='대';$('statProgress').append(unit);
