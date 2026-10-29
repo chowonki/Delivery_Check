@@ -156,21 +156,24 @@ async function copyTransferComment(text){
  try{area.focus();area.select();if(!document.execCommand('copy'))throw Error('copy failed');}finally{area.remove();focused?.focus?.({preventScroll:true});}
 }
 
+function isAccountHolderLine(line){
+ return /^(?:예금주(?:명)?|수취인(?:명)?|받는\s*(?:분|사람)|계좌\s*명의(?:자)?|입금자(?:명)?)(?:\s+|[:：=]|$)/.test(String(line||'').trim());
+}
 function parseOne(rawInput){const raw=String(rawInput||'').normalize('NFKC').replace(/\r\n?/g,'\n').replace(/[\u2028\u2029]/g,'\n').replace(/[\u200b-\u200d\u2060\ufeff]/g,'');
  const lines=raw.split('\n').map(line=>cleanLine(line).replace(/\*{1,2}([^*\n]+)\*{1,2}/g,'$1')).filter(Boolean);
  const threadPlates=[...new Set(lines.filter(l=>!/https?:\/\/|www\./i.test(l)).flatMap(l=>{const decoded=l;return [...decoded.matchAll(/(?:^|[^0-9가-힣])((?:\d{2,3}\s*[가-힣]\s*\d{4})|(?:[가-힣]{2}\s*\d{2}\s*[가-힣]\s*\d{4}))(?![0-9가-힣])/g)].map(m=>m[1].replace(/\s/g,''))}))];
  const sharedPlate=threadPlates.length===1?threadPlates[0]:'';
  const isUrl=s=>/https?:\/\/|www\.|slack\.com\/archives\//i.test(s);
- const getAccount=s=>{if(isUrl(s)||findPlate(s)||/(?:원|만원|금액|송금액|이체금액|주유비|지급액|₩)/.test(s))return '';const m=s.match(/(?:계좌(?:번호)?\s*[:：]?\s*)?((?:\d[\d\s-]{6,}\d))/);return m?m[1].replace(/\D/g,''):''};
+ const getAccount=s=>{if(isUrl(s)||isAccountHolderLine(s)||findPlate(s)||/(?:원|만원|금액|송금액|이체금액|주유비|지급액|₩)/.test(s))return '';const m=s.match(/(?:계좌(?:번호)?\s*[:：]?\s*)?((?:\d[\d\s-]{6,}\d))/);return m?m[1].replace(/\D/g,''):''};
  const getAmount=s=>{if(isUrl(s)||findPlate(s))return '';return parseKoreanAmount(s)};
  const getContextAmount=(s,account)=>{if(isUrl(s)||findPlate(s))return '';const digits=String(s).replace(/[,\s]/g,'').replace(/^₩/,'');const value=parseKoreanAmount(s)||(/^\d{1,12}$/.test(digits)?parseKoreanAmount('금액: '+s):'');if(!value)return '';if(/^\d{8,16}$/.test(digits)&&digits===account)return '';return value};
  const isAmountLabel=s=>/^(?:입금\s*금액|송금\s*금액|이체\s*금액|총\s*금액|금액|입금액|송금액|이체금액|지급액|비용|주유비|총액|합계)\s*[:：=\-]?\s*$/i.test(s.trim());
  const isLabeledAmount=s=>/(?:입금\s*금액|송금\s*금액|이체\s*금액|총\s*금액|금액|입금액|송금액|이체금액|지급액|비용|주유비|총액|합계)\s*[:：=\-]?\s*\S+/.test(s);
- const isBank=s=>!isUrl(s)&&!!bankOf(s)&&s.length<35;
+ const isBank=s=>!isUrl(s)&&!isAccountHolderLine(s)&&!!bankOf(s)&&s.length<35;
  const readLabeledAmounts=(start,end,account)=>{
   const found=[];
   for(let j=start;j<end;j++){
-   const line=lines[j];if(isUrl(line)||findPlate(line))continue;
+   const line=lines[j];if(isUrl(line)||isAccountHolderLine(line)||findPlate(line))continue;
    if(isAmountLabel(line)){
     const next=j+1;
     found.push({j:next<end?next:j,value:next<end&&!isBank(lines[next])?getContextAmount(lines[next],account):''});
@@ -204,7 +207,7 @@ function parseOne(rawInput){const raw=String(rawInput||'').normalize('NFKC').rep
    const possible=[];
    for(let j=ai+1;j<Math.min(lines.length,ai+12);j++){
     if(isBank(lines[j]))break;
-    if(nonTransferLabel.test(lines[j])&&!amountLabel.test(lines[j]))continue;
+    if(isAccountHolderLine(lines[j])||nonTransferLabel.test(lines[j])&&!amountLabel.test(lines[j]))continue;
     const v=getContextAmount(lines[j],getAccount(lines[ai]));if(v)possible.push({j,value:v});
    }
    // Without a label, only one possible amount is safe to select.
@@ -220,7 +223,7 @@ function parseOne(rawInput){const raw=String(rawInput||'').normalize('NFKC').rep
  if(!items.length){items=raw.split(/\n\s*\n+/).map(x=>x.trim()).filter(Boolean).map(parseBlock)}
  items=items.filter(x=>x.bank||x.account||x.amount||x.plate);if(sharedPlate)items.forEach(x=>x.plate=sharedPlate);if(isVehiclePaymentThread(raw))items.forEach(x=>x.commentTarget='딜러에게');return {items,ambiguous:threadPlates.length>1};
 }
-function parseBlock(b){const lines=b.split('\n').map(cleanLine).filter(Boolean);let bank='',account='',amount='';const plate=findPlate(b);const bankIdx=lines.findIndex(l=>bankOf(l));if(bankIdx>=0)bank=bankOf(lines[bankIdx]);const accountLine=lines.find(l=>/\d[\d\s-]{7,}\d/.test(l)&&!findPlate(l)&&!/^https?:\/\//i.test(l));if(accountLine)account=(accountLine.match(/\d[\d\s-]{7,}\d/)||[''])[0].replace(/[\s-]/g,'');
+function parseBlock(b){const lines=b.split('\n').map(cleanLine).filter(Boolean);let bank='',account='',amount='';const plate=findPlate(b);const bankIdx=lines.findIndex(l=>!isAccountHolderLine(l)&&bankOf(l));if(bankIdx>=0)bank=bankOf(lines[bankIdx]);const accountLine=lines.find(l=>/\d[\d\s-]{7,}\d/.test(l)&&!findPlate(l)&&!/^https?:\/\//i.test(l));if(accountLine)account=(accountLine.match(/\d[\d\s-]{7,}\d/)||[''])[0].replace(/[\s-]/g,'');
 const accountPos=accountLine?lines.indexOf(accountLine):-1;
 const amountCandidates=lines.filter((l,i)=>i>accountPos&&!/^https?:\/\//i.test(l)&&!findPlate(l)&&l!==accountLine).map(l=>parseKoreanAmount(l)).filter(Boolean);if(amountCandidates.length===1)amount=amountCandidates[0];
 return {bank,account,amount,plate,commentTarget:commentTarget(lines,bankIdx,accountPos),source:b}}
