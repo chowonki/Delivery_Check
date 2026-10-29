@@ -1,0 +1,171 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>하나은행 다계좌이체 데이터 정리</title><style>body{font-family:system-ui,'Malgun Gothic',sans-serif;background:#f3f6f7;color:#172c30;margin:0}main{max-width:1100px;margin:32px auto;padding:0 18px}h1{font-size:25px}section{background:white;border:1px solid #dbe5e5;border-radius:13px;padding:20px;margin:15px 0}textarea{width:100%;box-sizing:border-box;min-height:210px;padding:12px;border:1px solid #bacbce;border-radius:8px;font:14px/1.6 monospace}button{border:0;background:#008b80;color:white;border-radius:8px;padding:11px 17px;cursor:pointer;font-weight:700;margin:8px 8px 0 0}button.secondary{background:#e6f2f0;color:#075d57}button:disabled{opacity:.4;cursor:not-allowed}.hint{color:#607477;font-size:13px}.warning{background:#fff5d9;padding:12px;border-radius:8px;color:#785315}table{width:100%;border-collapse:collapse;min-width:760px}th,td{border-bottom:1px solid #e2e9e9;padding:9px;text-align:left;font-size:13px}th{background:#f0f6f5}td input{box-sizing:border-box;width:100%;min-width:80px;padding:7px;border:1px solid #cad7d7;border-radius:5px}td input.invalid{border:2px solid #d83c35;background:#fff4f3}.scroll{overflow-x:auto}.status{font-weight:700}.bad{color:#b42318}.good{color:#087a55}label{display:block;margin-bottom:7px;font-weight:650}small{display:block;margin-top:7px}.right{text-align:right}.bulk{display:flex;flex-wrap:wrap;gap:12px;margin:14px 0}.bulk>div{flex:1 1 280px}.bulk input{padding:10px;width:100%;box-sizing:border-box;border:1px solid #bacbce;border-radius:7px}.bulk button{margin-top:6px}</style></head><body><style>.toolnav{font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;display:flex;gap:8px;align-items:center;padding:10px 24px;background:#203e37;color:#d6e5dc;flex-wrap:wrap}.toolnav a{color:inherit;text-decoration:none;padding:7px 11px;border-radius:6px}.toolnav a:hover{background:#ffffff18}.toolnav a[aria-current=page]{background:#ffffff20;color:#fff;font-weight:700}.toolnav .homelink{margin-right:auto;color:#fff;font-weight:700}</style><nav class="toolnav" aria-label="업무 도구 이동"><a class="homelink" href="./index.html">↗ 업무 도구 홈</a><a href="./dispatch.html" >탁송체크</a><a href="./transfer.html" aria-current="page">하나은행 이체파일</a></nav><main><h1>하나은행 다계좌이체 데이터 정리</h1><p class="hint">여러 Slack 스레드 입력 → 스레드별 정보 자동 추출 → 검증·수정 → Excel 다운로드 · 브라우저 내 로컬 처리</p><section><h2 style="font-size:17px;margin:0 0 10px">간단 사용방법</h2><ol style="line-height:1.9;margin:0;padding-left:22px"><li>Slack 스레드별로 내용을 복사해 각 입력칸에 붙여넣습니다. 스레드 추가 버튼으로 입력칸을 늘릴 수 있습니다.</li><li>각 스레드 입력 후 <b>새 스레드 추가 추출</b>을 누릅니다. 기존 결과는 유지되고 새 이체 건이 표 아래에 누적되며, 정상 추가된 입력칸은 자동으로 비워집니다.</li><li>은행명·계좌번호·금액·차량번호를 확인하고 필요하면 수정합니다. 1억 원 초과 금액은 건별 1억 원 이하로 나눕니다. 분할 후 최대 100건까지 처리할 수 있습니다.</li><li>필요하면 출금·입금통장 메모를 각각 일괄 변경합니다.</li><li><b>하나은행 양식 Excel 다운로드</b>를 누릅니다.</li></ol><p class="hint">스레드 차량번호를 출금·입금통장표시 기본값으로 적용하며, 각각 일괄 변경할 수 있습니다. 다운로드 후 은행 업로드 전 원문과 대조하세요.</p></section><section><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><label>Slack 스레드 내용 (여러 건)</label><button type="button" class="secondary" id="addThread">+ 스레드 추가</button></div><div id="threads"><div class="thread-entry" style="border:1px solid #dbe5e5;border-radius:9px;padding:12px;margin:10px 0"><div style="display:flex;justify-content:space-between;align-items:center"><strong>스레드 1</strong></div><textarea class="threadRaw" id="raw" placeholder="현대 쏘나타 123가4567&#10;https://example.com/vehicle/987654321&#10;국민은행&#10;123-456-789012&#10;35,000원&#10;&#10;기아 K5 45나6789&#10;https://example.com/vehicle/123456789&#10;신한은행&#10;110-123-456789&#10;50,000원"></textarea></div></div><button id="parse">새 스레드 추가 추출</button><button class="secondary" id="clear">전체 초기화</button><p id="parseNotice" class="good" role="status"></p><p class="hint">추출된 행은 유지되고 정상 추가된 스레드 입력창만 자동으로 초기화됩니다. 입력 내용 중 추출에 실패한 스레드는 수정할 수 있도록 그대로 남습니다. 같은 내용을 다시 붙여넣으면 새로운 건으로 추가될 수 있으니 확인하세요. 금액: 1000만원 · 금액: 천만원 · 금액: 10000000 · 금액 다음 줄 숫자 · 1억 2천만원 등을 인식합니다. 복수의 금액이 있거나 의미가 불명확하면 금액을 비워 검토 대상으로 표시합니다. 계좌번호 다음 줄에 금액을 기재해 주세요. 불필요한 메시지·링크·차량모델은 무시하고 차량번호, 은행, 계좌번호, 금액만 추출합니다. 인식되지 않은 정보는 직접 확인하세요.</p></section><section><div class="warning">첨부한 HNB_MultiTrns_KO.xlsx의 Sheet1 열 순서(A~F)를 적용했습니다. 예금주 정보는 추출하거나 저장하지 않습니다. 실제 계좌 및 수취인 일치 여부는 은행에서 확인하세요.</div><label for="memo">차량번호는 스레드에서 자동 추출됩니다 (출금·입금통장표시 공통)</label><p class="hint">각 스레드의 차량번호는 해당 스레드에서 추출된 이체 행에만 적용합니다. 스레드 내 차량번호가 여러 개면 검토하세요.</p><div class="bulk"><div><label for="outMemo">출금통장 메모 일괄입력</label><input id="outMemo" placeholder="모든 출금통장표시에 입력할 내용"><button type="button" id="applyOut" class="secondary">출금통장 메모 일괄입력</button></div><div><label for="inMemo">입금통장 메모 일괄입력</label><input id="inMemo" placeholder="모든 입금통장표시에 입력할 내용"><button type="button" id="applyIn" class="secondary">입금통장 메모 일괄입력</button></div></div><p class="hint">기본값은 스레드 차량번호입니다. 각 버튼은 해당 통장 메모 열만 변경하며, 표에서 건별 수정도 가능합니다.</p><label for="cms" style="margin-top:12px">CMS코드 (선택)</label><input id="cms" placeholder="비워둘 수 있음" style="padding:10px;width:260px;max-width:90%;border:1px solid #bacbce;border-radius:7px"><p id="summary">추출된 데이터가 없습니다.</p><div class="scroll"><table><thead><tr><th>#</th><th>은행명</th><th>계좌번호</th><th>금액(원, 만원 단위 입력 가능)</th><th>차량번호</th><th>출금통장표시</th><th>입금통장표시</th><th>검증 결과</th><th>삭제</th></tr></thead><tbody id="rows"></tbody></table></div><button id="add" class="secondary">행 추가</button><button id="download">하나은행 양식 Excel 다운로드</button><small class="hint">건별 최대 1억 원, 분할 후 총 100건까지 생성합니다. 동일 은행·계좌번호라도 금액이나 차량번호가 다르면 중복 오류가 발생하지 않습니다. 다운로드 파일명에는 생성일시(밀리초까지)가 자동으로 붙습니다. 첨부 양식의 6개 열을 생성합니다. 출금·입금통장표시는 기본적으로 차량번호이며, 각각 일괄 변경하거나 행별 수정할 수 있습니다. 필수 항목 오류가 남으면 다운로드가 차단됩니다.</small></section></main><script>
+const banks=[['하나','하나은행'],['KEB하나','하나은행'],['국민','국민은행'],['KB','국민은행'],['신한','신한은행'],['우리','우리은행'],['농협','농협은행'],['NH','농협은행'],['기업','기업은행'],['IBK','기업은행'],['카카오뱅크','카카오뱅크'],['카카오','카카오뱅크'],['토스뱅크','토스뱅크'],['토스','토스뱅크'],['케이뱅크','케이뱅크'],['SC제일','SC제일은행'],['제일','SC제일은행'],['씨티','한국씨티은행'],['부산','부산은행'],['대구','iM뱅크'],['iM뱅크','iM뱅크'],['경남','경남은행'],['광주','광주은행'],['전북','전북은행'],['제주','제주은행'],['수협','수협은행'],['우체국','우체국'],['새마을금고','새마을금고'],['신협','신협'],['저축은행','저축은행'],['저축','저축']];
+const MAX_TRANSFERS=100, MAX_PER_TRANSFER=100000000;let data=[];let splitSerial=0;
+function expandTransfer(r){
+ const value=Number(r.amount);
+ if(!/^\d+$/.test(String(r.amount))||!Number.isSafeInteger(value)||value<=MAX_PER_TRANSFER)return [r];
+ const count=Math.ceil(value/MAX_PER_TRANSFER), group='split-'+(++splitSerial);
+ return Array.from({length:count},(_,i)=>({...r,amount:String(Math.min(MAX_PER_TRANSFER,value-i*MAX_PER_TRANSFER)),splitGroup:group}));
+}
+function expandTransfers(rows){return rows.flatMap(expandTransfer)};
+const $=id=>document.getElementById(id);const norm=s=>String(s||'').replace(/\s/g,'');const bankOf=s=>{let z=norm(s).toLowerCase();return [...banks].sort((a,b)=>b[0].length-a[0].length).find(x=>z.includes(x[0].toLowerCase()))?.[1]||''};const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function findPlate(text){let decoded=text;try{decoded=decodeURIComponent(text)}catch(e){}const matches=[...decoded.matchAll(/(?:^|[^0-9가-힣])((?:\d{2,3}\s*[가-힣]\s*\d{4})|(?:[가-힣]{2}\s*\d{2}\s*[가-힣]\s*\d{4}))(?![0-9가-힣])/g)].map(m=>m[1].replace(/\s/g,''));return [...new Set(matches)].length===1?matches[0]:''}
+// Robust, conservative KRW parser. Ambiguous or conflicting amounts are left blank.
+const koDigits={'영':0,'공':0,'일':1,'이':2,'삼':3,'사':4,'오':5,'육':6,'칠':7,'팔':8,'구':9};
+const smallUnits={'십':10,'백':100,'천':1000};
+const amountLabel=/(?:입금\s*금액|송금\s*금액|이체\s*금액|지급\s*금액|받을\s*금액|보낼\s*금액|입금액|송금액|이체액|지급액|청구액|총액|합계|금액|주유비|탁송비|비용)/;
+const nonTransferLabel=/(?:수수료|잔액|잔고|계좌|거래\s*아이디|거래\s*번호|차량\s*번호|전화|연락처|일자|시간|날짜|할인액|예치금|보증금)/;
+function koreanUnder10000(str){
+ str=String(str).replace(/[\s,]/g,'');if(!str)return null;
+ if(/^\d+$/.test(str))return Number(str);
+ let sum=0,pending='',seen=false,lastScale=10000;
+ for(const ch of str){
+  if(/[0-9]/.test(ch)){pending+=ch;seen=true;continue}
+  if(ch in koDigits){pending+=String(koDigits[ch]);seen=true;continue}
+  if(ch in smallUnits){let scale=smallUnits[ch];if(scale>=lastScale)return null;sum+=(pending?Number(pending):1)*scale;pending='';lastScale=scale;seen=true;continue}
+  return null;
+ }
+ return seen?sum+(pending?Number(pending):0):null;
+}
+function amountNumber(str){
+ let t=String(str).replace(/(?:원정|원|₩|￦)/g,'').replace(/[\s,，]/g,'').trim();
+ if(!t)return '';
+ if(/^\d+$/.test(t))return Number.isSafeInteger(Number(t))&&Number(t)>0?String(Number(t)):'';
+ let total=0;
+ for(const [u,factor] of [['억',100000000],['만',10000]]){
+  if(t.includes(u)){
+   const index=t.indexOf(u),prefix=t.slice(0,index);
+   if(!prefix||t.indexOf(u,index+1)>=0)return '';
+   const n=koreanUnder10000(prefix);if(n===null)return '';
+   total+=n*factor;t=t.slice(index+1);
+  }
+ }
+ if(t){const n=koreanUnder10000(t);if(n===null)return '';total+=n;}
+ return Number.isSafeInteger(total)&&total>0?String(total):'';
+}
+// Extract only an entire money expression, never a substring of an account number.
+function moneyCandidates(raw,{allowPlain=false}={}){
+ const text=String(raw).replace(/\u00a0/g,' ').replace(/[：]/g,':');
+ const re=/[₩￦]?\s*[0-9영공일이삼사오육칠팔구십백천,，]+(?:\s*[억만]\s*[0-9영공일이삼사오육칠팔구십백천,，]*)*\s*(?:원정|원)?/g;
+ const candidates=[];
+ for(const m of text.matchAll(re)){
+  const at=m.index, token=m[0].trim(),end=at+m[0].length;
+  if(!token||/[0-9가-힣A-Za-z]/.test(text[at-1]||''))continue;
+  if(/[0-9가-힣A-Za-z]/.test(text[end]||''))continue;
+  if(!allowPlain&&!/[억만원₩￦]/.test(token))continue;
+  const value=amountNumber(token);
+  if(value)candidates.push({amount:value,index:at,end});
+ }
+ return candidates;
+}
+function parseKoreanAmount(raw){
+ const s=String(raw||'').trim();if(!s||nonTransferLabel.test(s)&&!amountLabel.test(s))return '';
+ const labelMatch=amountLabel.exec(s);
+ const text=labelMatch?s.slice(labelMatch.index+labelMatch[0].length).replace(/^\s*[:=\-：]\s*/,''):s;
+ const candidates=moneyCandidates(text,{allowPlain:!!labelMatch||/^\s*[₩￦]/.test(text)});
+ if(candidates.length===1)return candidates[0].amount;
+ const unique=[...new Set(candidates.map(x=>x.amount))];
+ return unique.length===1&&candidates.length===1?unique[0]:'';
+}
+function cleanLine(s){return s.replace(/^\s*>\s*/, '').replace(/^\s*[-•]\s*/, '').trim()}
+function parse(){
+ const threadInputs=[...document.querySelectorAll('.threadRaw')];
+ const pending=threadInputs.map(el=>({el,raw:el.value.trim()})).filter(x=>x.raw && x.el.dataset.imported!==x.raw);
+ if(!threadInputs.some(el=>el.value.trim())){alert('스레드 내용을 입력하세요.');return}
+ if(!pending.length){alert('새로 입력하거나 변경된 스레드가 없습니다. 스레드 추가 버튼으로 새 내용을 입력하세요.');return}
+ let combined=[],warnings=[];
+ for(const item of pending){
+  const result=parseOne(item.raw);
+  if(!result.items.length){warnings.push('스레드 '+(threadInputs.indexOf(item.el)+1)+'번에서 이체정보를 찾지 못했습니다.');continue}
+  combined.push(...expandTransfers(result.items));
+  if(result.items.some(x=>!x.amount))warnings.push('스레드 '+(threadInputs.indexOf(item.el)+1)+'번의 일부 금액이 불명확하여 직접 확인이 필요합니다.');
+  if(result.ambiguous)warnings.push('스레드 '+(threadInputs.indexOf(item.el)+1)+'번의 차량번호가 여러 개입니다.');
+  item.itemsCount=result.items.length;
+ }
+ if(!combined.length){alert(warnings.join('\n')||'추출할 이체정보가 없습니다.');return}
+ if(data.length+combined.length>MAX_TRANSFERS){alert(`기존 ${data.length}건 + 신규 ${combined.length}건 = ${data.length+combined.length}건입니다. 최대 ${MAX_TRANSFERS}건을 초과하여 추가하지 않았습니다.`);return}
+ combined.forEach(x=>{x.outMemo=x.plate||'';x.inMemo=x.plate||''});
+ data.push(...combined);
+ pending.filter(x=>x.itemsCount).forEach(x=>{x.el.value='';delete x.el.dataset.imported;});
+ renumberThreads();
+ render();
+ $('parseNotice').textContent=`신규 ${combined.length}건(1억 초과 자동분할 포함)을 기존 결과 아래에 추가했습니다. 총 ${data.length}건입니다. 정상 처리된 입력칸은 비웠습니다.`;
+ if(warnings.length)alert(warnings.join('\n'));
+}
+function parseOne(rawInput){const raw=rawInput.replace(/\r/g,'');
+ const lines=raw.split('\n').map(cleanLine).filter(Boolean);
+ const threadPlates=[...new Set(lines.filter(l=>!/https?:\/\/|www\./i.test(l)).flatMap(l=>{const decoded=l;return [...decoded.matchAll(/(?:^|[^0-9가-힣])((?:\d{2,3}\s*[가-힣]\s*\d{4})|(?:[가-힣]{2}\s*\d{2}\s*[가-힣]\s*\d{4}))(?![0-9가-힣])/g)].map(m=>m[1].replace(/\s/g,''))}))];
+ const sharedPlate=threadPlates.length===1?threadPlates[0]:'';
+ const isUrl=s=>/https?:\/\/|www\.|slack\.com\/archives\//i.test(s);
+ const getAccount=s=>{if(isUrl(s)||findPlate(s)||/(?:원|만원|금액|송금액|이체금액|주유비|지급액|₩)/.test(s))return '';const m=s.match(/(?:계좌(?:번호)?\s*[:：]?\s*)?((?:\d[\d\s-]{6,}\d))/);return m?m[1].replace(/\D/g,''):''};
+ const getAmount=s=>{if(isUrl(s)||findPlate(s))return '';return parseKoreanAmount(s)};
+ const getContextAmount=(s,account)=>{if(isUrl(s)||findPlate(s))return '';const digits=String(s).replace(/[,\s]/g,'').replace(/^₩/,'');const value=parseKoreanAmount(s)||(/^\d{1,12}$/.test(digits)?parseKoreanAmount('금액: '+s):'');if(!value)return '';if(/^\d{8,16}$/.test(digits)&&digits===account)return '';return value};
+ const isAmountLabel=s=>/^(?:입금\s*금액|송금\s*금액|이체\s*금액|총\s*금액|금액|입금액|송금액|이체금액|지급액|비용|주유비|총액|합계)\s*[:：=\-]?\s*$/i.test(s.trim());
+ const isLabeledAmount=s=>/(?:입금\s*금액|송금\s*금액|이체\s*금액|총\s*금액|금액|입금액|송금액|이체금액|지급액|비용|주유비|총액|합계)\s*[:：=\-]?\s*\S+/.test(s);
+ const isBank=s=>!isUrl(s)&&!!bankOf(s)&&s.length<35;
+ let items=[],prevEnd=0;
+ for(let i=0;i<lines.length;i++){
+  if(!isBank(lines[i]))continue;
+  const bank=bankOf(lines[i]);
+  let ai=-1;for(let j=i+1;j<Math.min(lines.length,i+5);j++){if(isBank(lines[j]))break;if(getAccount(lines[j])){ai=j;break}}
+  if(ai<0)continue;
+  let mi=-1;
+  // Prefer explicit payment labels; reject conflicting labeled amounts.
+  let selectedAmount='', amountConflict=false;
+  const labeled=[];
+  for(let j=ai+1;j<Math.min(lines.length,ai+16);j++){
+   if(isBank(lines[j]))break;
+   const line=lines[j];
+   if(isAmountLabel(line)){
+    const k=j+1;
+    if(k<lines.length&&!isBank(lines[k])){
+     const v=getContextAmount(lines[k],getAccount(lines[ai]));if(v)labeled.push({j:k,value:v});
+    }
+   }else if(isLabeledAmount(line)){
+    const v=getContextAmount(line,getAccount(lines[ai]));if(v)labeled.push({j,value:v});
+   }
+  }
+  if(labeled.length){
+   if(new Set(labeled.map(x=>x.value)).size>1)amountConflict=true;
+   else {mi=labeled[0].j;selectedAmount=labeled[0].value;}
+  } else {
+   const possible=[];
+   for(let j=ai+1;j<Math.min(lines.length,ai+12);j++){
+    if(isBank(lines[j]))break;
+    if(nonTransferLabel.test(lines[j])&&!amountLabel.test(lines[j]))continue;
+    const v=getContextAmount(lines[j],getAccount(lines[ai]));if(v)possible.push({j,value:v});
+   }
+   // Without a label, only one possible amount is safe to select.
+   if(possible.length===1){mi=possible[0].j;selectedAmount=possible[0].value;}
+  }
+  const prev=lines.slice(Math.max(prevEnd,i-12),i);
+  const plateCandidates=prev.filter(l=>!isUrl(l)).flatMap(l=>[findPlate(l)]).filter(Boolean);
+  const plate=[...new Set(plateCandidates)].length===1?plateCandidates[0]:'';
+  items.push({bank,account:getAccount(lines[ai]),amount:amountConflict?'':selectedAmount,plate,source:lines.slice(Math.max(prevEnd,i-3),Math.max(mi,ai)+1).join('\n')});
+  prevEnd=Math.max(mi,ai)+1;i=Math.max(i,prevEnd-1);
+ }
+ if(!items.length){items=raw.split(/\n\s*\n+/).map(x=>x.trim()).filter(Boolean).map(parseBlock)}
+ items=items.filter(x=>x.bank||x.account||x.amount||x.plate);if(sharedPlate)items.forEach(x=>x.plate=sharedPlate);return {items,ambiguous:threadPlates.length>1};
+}
+function parseBlock(b){const lines=b.split('\n').map(cleanLine).filter(Boolean);let bank='',account='',amount='';const plate=findPlate(b);const bankIdx=lines.findIndex(l=>bankOf(l));if(bankIdx>=0)bank=bankOf(lines[bankIdx]);const accountLine=lines.find(l=>/\d[\d\s-]{7,}\d/.test(l)&&!findPlate(l)&&!/^https?:\/\//i.test(l));if(accountLine)account=(accountLine.match(/\d[\d\s-]{7,}\d/)||[''])[0].replace(/[\s-]/g,'');
+const accountPos=accountLine?lines.indexOf(accountLine):-1;
+const amountCandidates=lines.filter((l,i)=>i>accountPos&&!/^https?:\/\//i.test(l)&&!findPlate(l)&&l!==accountLine).map(l=>parseKoreanAmount(l)).filter(Boolean);if(amountCandidates.length===1)amount=amountCandidates[0];
+return {bank,account,amount,plate,source:b}}
+function validate(r){let e=[];if(!r.bank)e.push('은행명 확인');if(!/^\d{8,16}$/.test(r.account))e.push('계좌번호 확인');if(!/^\d+$/.test(r.amount)||!(Number(r.amount)>0)||!Number.isSafeInteger(Number(r.amount)))e.push('금액 확인');else if(Number(r.amount)>MAX_PER_TRANSFER)e.push('1억 원 초과 — 분할 필요');if(!/^(?:\d{2,3}[가-힣]\d{4}|[가-힣]{2}\d{2}[가-힣]\d{4})$/.test(r.plate||''))e.push('차량번호 확인');if(data.filter(x=>x!==r&&x.bank===r.bank&&x.account===r.account&&x.amount===r.amount&&x.plate===r.plate&&r.account&&!(r.splitGroup&&x.splitGroup===r.splitGroup)).length)e.push('동일 계좌·금액·차량번호 중복');return e}
+function render(){const tbody=$('rows');tbody.innerHTML='';data.forEach((r,i)=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${i+1}</td>${['bank','account','amount','plate','outMemo','inMemo'].map(k=>`<td><input data-i="${i}" data-k="${k}" value="${esc(r[k])}" aria-label="${k}"></td>`).join('')}<td class="status" id="st${i}"></td><td><button class="secondary" data-delete="${i}">삭제</button></td>`;tbody.appendChild(tr)});tbody.querySelectorAll('input').forEach(el=>el.addEventListener('input',()=>{const r=data[+el.dataset.i],k=el.dataset.k;r[k]=k==='account'?el.value.replace(/[\s-]/g,''):k==='amount'?(parseKoreanAmount(el.value)||el.value.replace(/[,\s원₩]/g,'')):el.value;refresh()}));tbody.querySelectorAll('input[data-k="amount"]').forEach(el=>el.addEventListener('change',()=>{const i=+el.dataset.i;const expanded=expandTransfer(data[i]);if(expanded.length>1){if(data.length+expanded.length-1>MAX_TRANSFERS){alert('분할 시 최대 100건을 초과합니다. 금액을 조정하거나 다른 파일로 나누어 처리하세요.');refresh();return}data.splice(i,1,...expanded);render();$('parseNotice').textContent='1억 원 초과 금액을 '+expanded.length+'건으로 분할했습니다.'}}));tbody.querySelectorAll('[data-delete]').forEach(el=>el.addEventListener('click',()=>{data.splice(+el.dataset.delete,1);render()}));refresh()}
+function refresh(){let invalid=0;data.forEach((r,i)=>{const errors=validate(r),st=$('st'+i);if(errors.length)invalid++;st.textContent=errors.length?errors.join(' / '):'확인 필요 없음';st.className='status '+(errors.length?'bad':'good');document.querySelectorAll(`[data-i="${i}"]`).forEach(el=>el.classList.toggle('invalid',errors.some(e=>({bank:'은행명 확인',account:'계좌번호 확인',amount:'금액 확인',plate:'차량번호 확인'}[el.dataset.k]===e))))});$('summary').textContent=`건별 최대 1억 원 · 최대 ${MAX_TRANSFERS}건 · 총 ${data.length}건 · 검증 통과 ${data.length-invalid}건 · 검토 필요 ${invalid}건`; $('download').disabled=!data.length||invalid>0||data.length>MAX_TRANSFERS}
+function renumberThreads(){document.querySelectorAll('.thread-entry').forEach((e,i)=>{e.querySelector('strong').textContent='스레드 '+(i+1)+(e.querySelector('textarea').dataset.imported?' (추출 완료)':'');});}
+$('addThread').onclick=()=>{const div=document.createElement('div');div.className='thread-entry';div.style.cssText='border:1px solid #dbe5e5;border-radius:9px;padding:12px;margin:10px 0';div.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><strong></strong><button type="button" class="secondary removeThread">삭제</button></div><textarea class="threadRaw" placeholder="차량모델 차량번호, 링크, 은행, 계좌번호, 금액을 포함한 스레드 내용을 붙여넣으세요."></textarea>';div.querySelector('button').onclick=()=>{div.remove();renumberThreads()};$('threads').appendChild(div);renumberThreads();div.querySelector('textarea').focus()};
+$('applyOut').onclick=()=>{const v=$('outMemo').value.trim();data.forEach(r=>r.outMemo=v);render()};$('applyIn').onclick=()=>{const v=$('inMemo').value.trim();data.forEach(r=>r.inMemo=v);render()};$('parse').onclick=parse;$('clear').onclick=()=>{document.querySelectorAll('.thread-entry').forEach((e,i)=>{if(i)e.remove();else {e.querySelector('textarea').value='';delete e.querySelector('textarea').dataset.imported}});data=[];$('parseNotice').textContent='';renumberThreads();render()};$('add').onclick=()=>{data.push({bank:'',account:'',amount:'',plate:'',outMemo:'',inMemo:''});render()};
+// Minimal offline OOXML spreadsheet writer, with stored ZIP entries and CRC32.
+const enc=new TextEncoder();const xml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));const crcTable=(()=>{let t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;t.push(c>>>0)}return t})();function crc32(a){let c=0xffffffff;for(const b of a)c=crcTable[(c^b)&255]^(c>>>8);return(c^0xffffffff)>>>0}function zip(entries){let chunks=[],central=[],off=0;const u16=n=>[n&255,n>>>8&255],u32=n=>[n&255,n>>>8&255,n>>>16&255,n>>>24&255];for(const [name,content] of entries){const nb=enc.encode(name),bytes=enc.encode(content),crc=crc32(bytes);const local=new Uint8Array([...u32(0x04034b50),...u16(20),...u16(0),...u16(0),...u16(0),...u16(0),...u32(crc),...u32(bytes.length),...u32(bytes.length),...u16(nb.length),...u16(0),...nb]);chunks.push(local,bytes);central.push(new Uint8Array([...u32(0x02014b50),...u16(20),...u16(20),...u16(0),...u16(0),...u16(0),...u16(0),...u32(crc),...u32(bytes.length),...u32(bytes.length),...u16(nb.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(off),...nb]));off+=local.length+bytes.length}const size=central.reduce((n,a)=>n+a.length,0),end=new Uint8Array([...u32(0x06054b50),...u16(0),...u16(0),...u16(entries.length),...u16(entries.length),...u32(size),...u32(off),...u16(0)]);return new Blob([...chunks,...central,end],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})}
+let lastExportStamp='', exportSequence=0;
+function uniqueTransferFilename(){
+  const d=new Date(), pad=(n,w=2)=>String(n).padStart(w,'0');
+  const stamp=`${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}_${pad(d.getMilliseconds(),3)}`;
+  exportSequence=stamp===lastExportStamp?exportSequence+1:0;
+  lastExportStamp=stamp;
+  return `하나은행_다계좌이체_${stamp}${exportSequence?'_'+exportSequence:''}.xlsx`;
+}
+function excel(){if(data.length>MAX_TRANSFERS){alert('최대 100건까지만 다운로드할 수 있습니다. 초과된 행을 삭제하거나 나눠서 처리하세요.');return}if(!data.length||data.some(r=>validate(r).length)){alert('검토가 필요한 행을 수정한 후 다운로드하세요.');return}const cms=$('cms').value.trim();const hanaBank=b=>({'국민은행':'국민','신한은행':'신한','우리은행':'우리','농협은행':'농협','기업은행':'기업','하나은행':'하나','저축은행':'저축','iM뱅크':'대구','SC제일은행':'SC제일','수협은행':'수협'}[b]||b.replace(/은행$/,''));const values=[['입금은행','입금계좌번호','입금액(원)','출금통장표시','입금통장표시','CMS코드'],...data.map(r=>[hanaBank(r.bank),r.account,Number(r.amount),r.outMemo??r.plate,r.inMemo??r.plate,cms])];const sheetRows=values.map((row,i)=>`<row r="${i+1}">${row.map((v,j)=>{const ref=String.fromCharCode(65+j)+(i+1);return j===2&&i>0?`<c r="${ref}"><v>${v}</v></c>`:`<c r="${ref}" t="inlineStr"><is><t>${xml(v)}</t></is></c>`}).join('')}</row>`).join('');const sheet=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="18" customWidth="1"/><col min="2" max="2" width="24" customWidth="1"/><col min="3" max="3" width="16" customWidth="1"/><col min="4" max="6" width="20" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData></worksheet>`;const entries=[['[Content_Types].xml','<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'],['_rels/.rels','<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],['xl/workbook.xml','<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="이체검토" sheetId="1" r:id="rId1"/></sheets></workbook>'],['xl/_rels/workbook.xml.rels','<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'],['xl/worksheets/sheet1.xml',sheet]];const blob=zip(entries),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=uniqueTransferFilename();document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}$('download').onclick=excel;render();
+</script></body></html>
