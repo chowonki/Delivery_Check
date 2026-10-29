@@ -19,22 +19,31 @@
     const body = doc && doc.getElementById('body');
     if (!body || body.dataset.individualCopy) return;
     body.dataset.individualCopy = 'true';
-    // Select the single latest record per plate across every vendor before matching.
+    // Choose the latest date across vendors and retain the full audit trail.
     const core = frame.contentWindow.DispatchCore;
     if (core && !core._latestAcrossVendors) {
       const originalMatch = core.match;
+      core.statuses.conflict = '최신일 금액 충돌';
       core.match = function(input, files) {
-        const latest = new Map();
-        let serial = 0;
+        const history = new Map();
         for (const file of files) for (const record of file.records || []) {
-          const date = /^\d{4}-\d{2}-\d{2}$/.test(record.dispatchDate || '') ? record.dispatchDate : '';
-          const current = latest.get(record.plate);
-          if (!current || date > current.date || (date === current.date && serial > current.serial))
-            latest.set(record.plate, { record, date, serial });
-          serial++;
+          if (!history.has(record.plate)) history.set(record.plate, []);
+          history.get(record.plate).push(record);
         }
-        const selected = [...latest.values()].map(item => item.record);
-        return originalMatch(input, [{name:'최신 기록',records:selected}]);
+        const latest = new Map(), conflicts = new Map();
+        for (const [plate, records] of history) {
+          const dateOf = r => /^\d{4}-\d{2}-\d{2}$/.test(r.dispatchDate || '') ? r.dispatchDate : '';
+          const date = records.reduce((max, r) => dateOf(r) > max ? dateOf(r) : max, '');
+          const candidates = records.filter(r => dateOf(r) === date);
+          latest.set(plate, candidates[candidates.length - 1]);
+          const priced = candidates.filter(r => core.complete(r) && r.vendor !== 'C' && r.cost !== null && Number.isFinite(Number(r.cost)));
+          if (new Set(priced.map(r => Number(r.cost))).size > 1) conflicts.set(plate, candidates);
+        }
+        return originalMatch(input, [{name:'최신 기록', records:[...latest.values()]}]).map(row => {
+          const record = latest.get(row.plate), conflict = conflicts.get(row.plate);
+          return {...row, latestRecord:record, recordHistory:history.get(row.plate) || [], latestConflict:!!conflict,
+            ...(conflict ? {status:'conflict', amount:null, meaning:'동일 최신일 금액 상이', sources:conflict.map(r => `${r.file} / ${r.sheet} / ${r.row}행`).join('; ')} : {})};
+        });
       };
       core._latestAcrossVendors = true;
     }
@@ -91,6 +100,100 @@
         notify('복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.');
       }
     });
+    const app = frame.contentWindow.DispatchApp;
+    if (!core || !app) return;
+    const $ = id => doc.getElementById(id);
+    const selected = new Set(), processed = new Set();
+    const key = r => JSON.stringify([r.plate,r.dispatchDate,r.amount,r.sources,r.status]);
+    const originalIncludes = core.includes;
+    let processing = 'all';
+    core.includes = (r, filter) => originalIncludes(r, filter) && (processing === 'all' || processed.has(key(r)) === (processing === 'done'));
+    const extraStyle = doc.createElement('style');
+    extraStyle.textContent = '.dispatch-tools{padding:16px;border-bottom:1px solid #e2e9e4;display:flex;flex-wrap:wrap;gap:10px;align-items:center}.dispatch-tools .hint{font-size:12px;color:#607477;width:100%}.dispatch-tools select{max-width:100%;padding:8px}.dispatch-totals{font-weight:650;width:100%;font-size:13px;line-height:1.8}.dispatch-check{width:18px;height:18px;accent-color:#397956;cursor:pointer}.dispatch-selected{background:#edf8f1}.dispatch-processed .plate{text-decoration:line-through;color:#73847a}.badge.conflict{background:#fff0ed;color:#b42318}.record-history{min-width:190px;max-width:320px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7}.record-history p{margin:8px 0}.dispatch-tools button{white-space:normal}';
+    doc.head.append(extraStyle);
+    const tools = doc.createElement('div');tools.className='dispatch-tools';
+    tools.innerHTML='<label>처리 상태 <select id="processingFilter"><option value="all">전체</option><option value="pending">미처리만</option><option value="done">처리 완료만</option></select></label><button type="button" id="selectedPlates" class="button compact">선택 차량번호 복사</button><button type="button" id="selectedAmounts" class="button compact">선택 차량번호+금액 복사</button><button type="button" id="markDone" class="button compact">선택 처리 완료</button><button type="button" id="markPending" class="button compact">선택 미처리로</button><button type="button" id="copyInquiry" class="button compact">렌톡 문의 목록 복사</button><div id="dispatchTotals" class="dispatch-totals" role="status"></div><div class="hint">체크박스는 차량번호 단위로 선택합니다. 전체 선택·선택 저장은 현재 필터에 맞는 차량 기준입니다. 선택 저장은 하단 저장 범위에서 「선택한 차량」을 고르세요. 처리 표시는 현재 페이지에서만 유지되며 전체 초기화 시 지워집니다.</div>';
+    doc.querySelector('.resulthead').after(tools);
+    const clearList = doc.createElement('button');clearList.type='button';clearList.className='button';clearList.textContent='차량목록만 초기화';clearList.id='clearVehicleList';$('reset').before(clearList);
+    const selectedOption = doc.createElement('option');selectedOption.value='selected';selectedOption.textContent='선택한 차량';$('scope').append(selectedOption);
+    const head = doc.querySelector('#table thead tr');
+    const selectHead = doc.createElement('th');selectHead.innerHTML='<input type="checkbox" id="selectVisibleVehicles" class="dispatch-check" aria-label="현재 표시 조건의 차량 전체 선택">';head.prepend(selectHead);
+    for (const label of ['처리','조회 근거 / 이전 기록']) {const th=doc.createElement('th');th.textContent=label;head.append(th);}
+    function visibleRows() {
+      const q=core.plate($('search').value),vendor=$('vendorFilter').value,state=$('stateFilter').value,from=$('dateFrom').value,to=$('dateTo').value;
+      const filter=doc.querySelector('.tabs [data-filter].active')?.dataset.filter || 'all';
+      return core.unique(app.getResults().filter(r => core.includes(r,filter) && r.plate.includes(q) && (vendor==='all'||r.vendor.split(',').map(v=>v.trim()).includes(vendor)) && (state==='all'||(r.rawStates||[]).includes(state)) && (!from&&!to||(r.dispatchDates||[]).some(d=>(!from||d.slice(0,10)>=from)&&(!to||d.slice(0,10)<=to)))));
+    }
+    const selectedRows = () => visibleRows().filter(r=>selected.has(r.plate));
+    const total = rows => rows.filter(r=>r.status==='confirmed'&&Number.isFinite(r.amount)).reduce((sum,r)=>sum+BigInt(r.amount),0n).toLocaleString('ko-KR');
+    function redraw() {$('search').dispatchEvent(new frame.contentWindow.Event('input'));enhance();}
+    function updateControls() {
+      const visible=visibleRows(),rows=selectedRows(),all=core.unique(app.getResults());
+      $('dispatchTotals').textContent=`금액 확인 총액 ${total(all)}원 · 표시 ${visible.length}대 / ${total(visible)}원 · 선택 ${rows.length}대 / ${total(rows)}원 · 처리 완료 ${all.filter(r=>processed.has(key(r))).length}대 (금액 확인 차량만 합산)`;
+      const box=$('selectVisibleVehicles');box.disabled=!visible.length;box.checked=visible.length>0&&rows.length===visible.length;box.indeterminate=rows.length>0&&rows.length<visible.length;
+      for (const id of ['selectedPlates','selectedAmounts','markDone','markPending']) $(id).disabled=!rows.length;
+      $('copyInquiry').disabled=!visible.some(r=>r.cInquiry);
+    }
+    function recordText(r, chosen) {
+      return `${chosen?'적용 기록':'이전 / 동시 기록'} · ${r.dispatchDate||'일자 없음'}\n${({A:'한빛탁송',B:'오픈마일',C:'렌톡'})[r.vendor]||r.vendor} · ${r.state||'상태 없음'} · ${r.cost==null?'금액 없음':String(r.cost)+'원'}\n${r.file||'파일명 없음'} / ${r.sheet||'시트 없음'} / ${r.row||'?'}행`;
+    }
+    function enhance() {
+      const visible=visibleRows(),plates=new Set(visible.map(r=>r.plate));
+      for (const plate of selected) if (!plates.has(plate)) selected.delete(plate);
+      const byPlate=new Map(app.getResults().map(r=>[r.plate,r]));
+      for (const tr of body.rows) {
+        const plate=tr.querySelector('td.plate')?.textContent.trim(),r=byPlate.get(plate);if(!r)continue;
+        if (!tr.dataset.enhanced) {
+          tr.dataset.enhanced='true';
+          const td=doc.createElement('td'),box=doc.createElement('input');box.type='checkbox';box.className='dispatch-check vehicle-select';box.setAttribute('aria-label',plate+' 선택');
+          box.onchange=()=>{if(box.checked)selected.add(plate);else selected.delete(plate);enhance()};td.append(box);tr.prepend(td);
+          const doneCell=doc.createElement('td'),done=doc.createElement('input');done.type='checkbox';done.className='dispatch-check vehicle-done';done.setAttribute('aria-label',plate+' 처리 완료');
+          done.onchange=()=>{if(done.checked)processed.add(key(r));else processed.delete(key(r));redraw()};doneCell.append(done);tr.append(doneCell);
+          const source=doc.createElement('td'),details=doc.createElement('details'),summary=doc.createElement('summary');summary.textContent=r.latestConflict?'금액 충돌 · 근거 보기':'조회 근거 ('+(r.recordHistory||[]).length+'건)';details.append(summary);details.className='record-history';
+          if(r.latestConflict){const warning=doc.createElement('p');warning.textContent='같은 최신일의 완료 금액이 달라 자동 확정하지 않았습니다.';details.append(warning);}
+          const history=r.recordHistory||[];
+          if(!history.length){const p=doc.createElement('p');p.textContent='일치하는 원본 기록이 없습니다.';details.append(p);}
+          history.slice().reverse().forEach(record=>{const p=doc.createElement('p');p.textContent=recordText(record,record===r.latestRecord&&!r.latestConflict);details.append(p)});source.append(details);tr.append(source);
+        }
+        tr.querySelector('.vehicle-select').checked=selected.has(plate);tr.querySelector('.vehicle-done').checked=processed.has(key(r));
+        tr.classList.toggle('dispatch-selected',selected.has(plate));tr.classList.toggle('dispatch-processed',processed.has(key(r)));
+      }
+      updateControls();
+    }
+    $('selectVisibleVehicles').onchange=e=>{selected.clear();if(e.target.checked)visibleRows().forEach(r=>selected.add(r.plate));enhance()};
+    $('processingFilter').onchange=e=>{processing=e.target.value;selected.clear();redraw()};
+    async function copyRows(rows,amounts=false) {
+      if (!rows.length) {notify('복사할 차량이 없습니다.');return;}
+      if(amounts&&rows.some(r=>r.status!=='confirmed'||r.amount==null)){notify('금액이 확인된 차량만 선택해 주세요.');return;}
+      try {await copyValue(rows.map(r=>amounts?`${r.plate}\t${r.amount}`:r.plate).join('\n'));notify(rows.length+'대 복사 완료');}catch{notify('복사 권한을 확인해 주세요.');}
+    }
+    $('selectedPlates').onclick=()=>copyRows(selectedRows());$('selectedAmounts').onclick=()=>copyRows(selectedRows(),true);
+    $('copyInquiry').onclick=()=>copyRows(visibleRows().filter(r=>r.cInquiry));
+    for(const [id,value] of [['markDone',true],['markPending',false]]) $(id).onclick=()=>{for(const r of selectedRows()){if(value)processed.add(key(r));else processed.delete(key(r));}redraw()};
+    clearList.onclick=()=>{
+      if(doc.body.classList.contains('busy'))return;
+      selected.clear();$('input').value='';$('input').dispatchEvent(new frame.contentWindow.Event('input'));
+      $('search').value='';$('vendorFilter').value='all';$('stateFilter').value='all';$('dateFrom').value='';$('dateTo').value='';$('scope').value='confirmed';processing='all';$('processingFilter').value='all';
+      doc.querySelector('.tabs [data-filter="all"]').click();$('input').focus();notify('차량목록을 비웠습니다. 업체 파일은 유지됩니다.');
+    };
+    const reset=$('reset').onclick;$('reset').onclick=()=>{reset();if(!app.getFiles().length&&!$('input').value){selected.clear();processed.clear();processing='all';$('processingFilter').value='all';$('dateFrom').value='';$('dateTo').value='';redraw()}};
+    let exporting=false,exportSerial=0;
+    doc.querySelectorAll('[data-export]').forEach(button=>{
+      const original=button.onclick;
+      button.onclick=async event=>{
+        if($('scope').value!=='selected')return original.call(button,event);
+        const rows=selectedRows();if(!rows.length){notify('저장할 차량을 선택해 주세요.');return;}
+        if(exporting||doc.body.classList.contains('busy'))return;exporting=true;
+        try {
+          const type=button.dataset.export,blob=type==='txt'?new Blob([core.textExport(rows)],{type:'text/plain;charset=utf-8'}):type==='xlsx'?await app.excelBlob(rows):app.pdfBlob(rows);
+          const url=URL.createObjectURL(blob),a=doc.createElement('a');a.href=url;a.download='탁송조회_선택_'+new Date().toLocaleString('sv-SE',{timeZone:'Asia/Seoul',hour12:false}).replace(/[-:]/g,'').replace(' ','_')+'_'+(++exportSerial)+'.'+type;doc.body.append(a);
+          try{a.click()}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000)}notify(rows.length+'대 선택 저장 요청 완료');
+        }catch(error){notify('저장하지 못했습니다: '+error.message)}finally{exporting=false;}
+      };
+    });
+    new MutationObserver(enhance).observe(body,{childList:true});
+    enhance();
+
     new MutationObserver(decorate).observe(body, {childList:true});
     decorate();
   }
