@@ -1,4 +1,4 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>탁송체크 · 차량 조회</title><style>*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#f5f7f5}nav{height:54px;display:flex;align-items:center;gap:20px;padding:0 20px;background:#fff;border-bottom:1px solid #dfe7e1}a{color:#254b3b;text-decoration:none;font-size:14px}a:focus-visible{outline:2px solid #254b3b}iframe{display:block;width:100%;height:calc(100dvh - 54px);border:0}</style></head><body><nav aria-label="기능 이동"><a href="./index.html">← 홈</a><a href="./dispatch.html" aria-current="page">탁송체크</a><a href="./transfer.html">하나은행 이체파일</a></nav><iframe src="./dispatch-tool.html?v=20261029-completed" title="탁송체크 차량 조회" allow="clipboard-write"></iframe><script>
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>탁송체크 · 차량 조회</title><style>*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#f5f7f5}nav{height:54px;display:flex;align-items:center;gap:20px;padding:0 20px;background:#fff;border-bottom:1px solid #dfe7e1}a{color:#254b3b;text-decoration:none;font-size:14px}a:focus-visible{outline:2px solid #254b3b}iframe{display:block;width:100%;height:calc(100dvh - 54px);border:0}</style></head><body><nav aria-label="기능 이동"><a href="./index.html">← 홈</a><a href="./dispatch.html" aria-current="page">탁송체크</a><a href="./transfer.html">하나은행 이체파일</a></nav><iframe src="./dispatch-tool.html?v=20261029-fuel-review" title="탁송체크 차량 조회" allow="clipboard-write"></iframe><script>
 (() => {
   const frame = document.querySelector('iframe');
   const status = document.createElement('div');
@@ -28,6 +28,7 @@
         const result = readSheets(sheets, name);
         const metadata = new Map();
         for (const record of result.records) {
+          if (record.vendor !== 'C' && String(record.rawCost ?? '').trim()==='')record.cost=null;
           if (record.vendor !== 'C') continue;
           if (!metadata.has(record.sheet)) {
             const sheet = sheets.find(sheet => sheet.name === record.sheet);
@@ -42,6 +43,18 @@
           record.memo = [...new Set(columns.map(i => String(raw[i] ?? '').trim()).filter(Boolean))].join(' · ');
           record.carrier = /캐리어/.test(record.memo);
         }
+        const jobMetadata=new Map();
+        for(const record of result.records){
+          if(!jobMetadata.has(record.sheet)){
+            const sheet=sheets.find(s=>s.name===record.sheet);
+            const clean=value=>String(value??'').normalize('NFKC').replace(/\s+/g,'');
+            const header=sheet?.rows.slice(0,30).find(row=>row.some(v=>['차량번호','출발지차량번호'].includes(clean(v)))&&row.some(v=>['상태','운행상태'].includes(clean(v))));
+            const index=header?.findIndex(v=>/^(접수번호|오더번호|주문번호|운행번호|탁송번호|배차번호|orderid|jobid)$/i.test(clean(v)))??-1;
+            jobMetadata.set(record.sheet,{sheet,index});
+          }
+          const {sheet,index}=jobMetadata.get(record.sheet);if(!sheet)continue;
+          if(index>=0)record.jobId=String((sheet.rows[record.row-(sheet.startRow??1)]||[])[index]??'').trim();
+        }
         return result;
       };
     }
@@ -50,44 +63,78 @@
       const workerSource = doc.getElementById('worker-source');
       workerSource.textContent = '(' + installCarrierReader.toString() + ')(DispatchCore);\n' + workerSource.textContent;
     }
+    const fuelStorageKey='worktool.fuel-confirmations.v1';
+    let fuelSaved={};
+    try{const saved=JSON.parse(localStorage.getItem(fuelStorageKey)||'{}');if(saved&&typeof saved==='object'&&!Array.isArray(saved))fuelSaved=saved;}catch{}
+function createFuelMatcher(core, originalMatch, getOverride = () => null) {
+  const dateOf = r => /^\d{4}-\d{2}-\d{2}$/.test(r.dispatchDate || '') ? r.dispatchDate : '';
+  const identity = r => JSON.stringify([r.vendor,r.plate,dateOf(r),r.jobId || '',r.origin || '',r.memo || '',r.state || '',r.rawCost ?? r.cost]);
+  return function(input, files) {
+    const history = new Map();
+    for (const file of files) for (const record of file.records || []) {
+      const r={...record};
+      if(r.vendor!=='C' && 'rawCost' in r && String(r.rawCost ?? '').trim()==='')r.cost=null;
+      if(!history.has(r.plate))history.set(r.plate,[]);
+      history.get(r.plate).push(r);
+    }
+    const counts=new Map(),inputDates=new Map();input.forEach(v=>{counts.set(v.plate,(counts.get(v.plate)||0)+1);if(!inputDates.has(v.plate))inputDates.set(v.plate,new Set());const d=(v.date||'').slice(0,10);if(d)inputDates.get(v.plate).add(d);});
+    return input.map(v=>{
+      const records=history.get(v.plate)||[],unique=[...new Map(records.map(r=>[identity(r),r])).values()];
+      const requestedDate=(v.date||'').slice(0,10)||(inputDates.get(v.plate).size===1?[...inputDates.get(v.plate)][0]:''),latestDate=unique.reduce((max,r)=>dateOf(r)>max?dateOf(r):max,'');
+      const targetDate=requestedDate || latestDate;
+      const candidates=unique.filter(r=>dateOf(r)===targetDate);
+      let chosen=candidates[candidates.length-1],selectionReason='';
+      if(chosen?.vendor==='B' && !core.complete(chosen) && !/취소|캔슬|cancel/i.test(chosen.state||'')){
+        const completed=candidates.filter(r=>r.vendor==='B'&&core.complete(r));
+        if(completed.length){chosen=completed[completed.length-1];selectionReason='동일 기준일 오픈마일 기록 중 완료 기록 우선 적용';}
+      }
+      const done=candidates.filter(core.complete),priced=done.filter(r=>r.vendor!=='C'&&r.cost!==null&&Number.isFinite(Number(r.cost)));
+      const conflict=new Set(priced.map(r=>Number(r.cost))).size>1;
+      const jobIds=new Set(candidates.map(r=>r.jobId).filter(Boolean));
+      const origins=new Set(done.map(r=>r.origin).filter(Boolean));
+      const ambiguous=jobIds.size>1 || origins.size>1;
+      let row=originalMatch([v],[{name:'기준일 기록',records:chosen?[chosen]:[]}])[0];
+      const carrierRecords=records.filter(r=>r.vendor==='C'&&r.carrier),carrier=carrierRecords.length>0;
+      const fingerprint=JSON.stringify([v.plate,requestedDate,[...new Set(unique.map(identity))].sort()]);
+      row={...row,inputDuplicate:counts.get(v.plate)>1,latestRecord:chosen,recordHistory:records,latestConflict:conflict,
+        selectionReason,carrier,carrierMemo:carrierRecords.map(r=>r.memo).filter(Boolean).join(' · '),
+        duplicateRecords:records.length-unique.length,targetDate,requestedDate,reviewKey:fingerprint,fuelNotes:[]};
+      if(requestedDate && !candidates.length && records.length){
+        row.status='dateReview';row.amount=null;row.meaning='기준일 기록 없음';
+        row.fuelNotes.push('입력일 '+requestedDate+'과 일치하는 운행 기록이 없습니다. 다른 날짜 금액은 적용하지 않았습니다.');
+      } else if(!requestedDate && records.length && !latestDate){
+        row.fuelNotes.push('원본 운행일자 없음: 차량번호 기준으로 조회');
+      }
+      if(conflict || ambiguous){row.status=conflict?'conflict':'tripReview';row.amount=null;row.meaning=conflict?'동일 기준일 금액 상이':'별도 운행 여부 확인';}
+      if(row.status==='confirmed' && (!Number.isSafeInteger(row.amount)||row.amount<0)){
+        row.status='cost';row.amount=null;row.fuelNotes.push('금액 범위 또는 음수 금액 확인 필요');
+      }
+      if(chosen && core.complete(chosen) && chosen.vendor!=='C' && chosen.cost===null){
+        row.fuelNotes.push(String(chosen.rawCost??'').trim()===''?'금액 미입력':'금액 형식 확인 필요');
+      }
+      if(row.duplicateRecords)row.fuelNotes.push('내용이 같은 중복 기록 '+row.duplicateRecords+'건 제외');
+      if(carrier){row.status='carrier';row.amount=null;row.cInquiry=false;row.meaning='캐리어';}
+      row.fuelState=carrier?'exempt':row.status==='confirmed'?(row.amount===0?'zero':'verified'):row.status==='incomplete'?'waiting':row.status==='slack'?'inquiry':'needs';
+      row.fuelLabel=({exempt:'캐리어 제외',zero:'없음(0원)',verified:'확인됨',waiting:'완료 대기',inquiry:'업체 문의',needs:'확인 필요'})[row.fuelState];
+      const override=getOverride(fingerprint);
+      row.canConfirm=!!chosen&&core.complete(chosen)&&!carrier;
+      if(override && row.canConfirm && Number.isSafeInteger(override.amount)&&override.amount>=0 && override.reason){
+        row.status='confirmed';row.amount=override.amount;row.fuelState=override.amount===0?'zero':'verified';row.fuelLabel=override.amount===0?'없음(0원) · 수동확인':'확인됨 · 수동확인';
+        row.manualConfirmation=override;row.fuelNotes.push('수동확인: '+override.reason+' ('+override.savedAt+')');
+      }
+      if(inputDates.get(v.plate).size>1 && !carrier){
+        row.status='tripReview';row.amount=null;row.fuelState='needs';row.fuelLabel='확인 필요';row.canConfirm=false;delete row.manualConfirmation;
+        row.fuelNotes.push('같은 차량에 서로 다른 입력일이 있습니다. 차량번호 단위 집계이므로 날짜별로 나눠 조회해 주세요.');
+      }
+      return row;
+    });
+  };
+}
+
     if (core && !core._latestAcrossVendors) {
       const originalMatch = core.match;
-      core.statuses.conflict = '최신일 금액 충돌';
-      core.statuses.carrier = '캐리어';
-      core.match = function(input, files) {
-        const history = new Map();
-        for (const file of files) for (const record of file.records || []) {
-          if (!history.has(record.plate)) history.set(record.plate, []);
-          history.get(record.plate).push(record);
-        }
-        const latest = new Map(), conflicts = new Map(), selectionReasons = new Map();
-        for (const [plate, records] of history) {
-          const dateOf = r => /^\d{4}-\d{2}-\d{2}$/.test(r.dispatchDate || '') ? r.dispatchDate : '';
-          const date = records.reduce((max, r) => dateOf(r) > max ? dateOf(r) : max, '');
-          const candidates = records.filter(r => dateOf(r) === date);
-          let chosen = candidates[candidates.length - 1];
-          // Same-day Openmile snapshots must not regress a completed job to an active state.
-          // Keep newer dates and explicit cancellations as supplied by the source.
-          if (date && chosen.vendor === 'B' && !core.complete(chosen) && !/취소|캔슬|cancel/i.test(String(chosen.state || ''))) {
-            const completed = candidates.filter(r => r.vendor === 'B' && core.complete(r));
-            if (completed.length) {
-              chosen = completed[completed.length - 1];
-              selectionReasons.set(plate, '동일 최신일 오픈마일 기록 중 완료 기록 우선 적용');
-            }
-          }
-          latest.set(plate, chosen);
-          const priced = candidates.filter(r => core.complete(r) && r.vendor !== 'C' && r.cost !== null && Number.isFinite(Number(r.cost)));
-          if (new Set(priced.map(r => Number(r.cost))).size > 1) conflicts.set(plate, candidates);
-        }
-        return originalMatch(input, [{name:'최신 기록', records:[...latest.values()]}]).map(row => {
-          const record = latest.get(row.plate), conflict = conflicts.get(row.plate);
-          const carrierRecords = (history.get(row.plate) || []).filter(r => r.vendor === 'C' && r.carrier);
-          const carrier = carrierRecords.length > 0;
-          return {...row, latestRecord:record, recordHistory:history.get(row.plate) || [], latestConflict:!!conflict, selectionReason:selectionReasons.get(row.plate) || '', carrier, carrierMemo:carrierRecords.map(r=>r.memo).filter(Boolean).join(' · '),
-            ...(conflict ? {status:'conflict', amount:null, meaning:'동일 최신일 금액 상이', sources:conflict.map(r => `${r.file} / ${r.sheet} / ${r.row}행`).join('; ')} : {}),
-            ...(carrier ? {status:'carrier', amount:null, cInquiry:false, meaning:'캐리어', sources:carrierRecords.map(r=>`${r.file} / ${r.sheet} / ${r.row}행`).join('; ')} : {})};
-        });
-      };
+      Object.assign(core.statuses,{conflict:'금액 충돌',carrier:'캐리어',dateReview:'기준일 확인',tripReview:'운행 확인 필요'});
+      core.match = createFuelMatcher(core,originalMatch,key=>fuelSaved[key]);
       core._latestAcrossVendors = true;
     }
 
@@ -151,13 +198,13 @@
     const originalIncludes = core.includes;
     let processing = 'all', carrierFilter = 'all', summaryFilter = null;
     const originalNotes = core.notes, originalValues = core.values;
-    core.notes = r => [originalNotes(r), r.carrier ? '캐리어' : '', r.carrierMemo || ''].filter(Boolean).join(' · ');
+    core.notes = r => [originalNotes(r), r.carrier ? '캐리어' : '', r.carrierMemo || '', r.fuelLabel || '', ...(r.fuelNotes || [])].filter(Boolean).join(' · ');
     core.values = r => {const values=originalValues(r);values[8]=core.notes(r);return values;};
     core.textExport = rows => '\ufeff' + [core.headers, ...core.unique(rows).map(core.values)].map(row => row.map(v => String(v ?? '').replace(/[\t\r\n]/g,' ')).join('\t')).join('\r\n');
 
-    core.includes = (r, filter) => { filter=summaryFilter || filter; return (filter === 'progress' ? (r.rawStates || []).includes('탁송 중') : filter === 'carrier' ? !!r.carrier : originalIncludes(r, filter)) && (carrierFilter === 'all' || !!r.carrier === (carrierFilter === 'carrier')) && (processing === 'all' || processed.has(key(r)) === (processing === 'done')); };
+    core.includes = (r, filter) => { filter=summaryFilter || filter; return (!doc.getElementById('fuelStatusFilter') || $('fuelStatusFilter').value==='all' || ($('fuelStatusFilter').value==='manual' ? !!r.manualConfirmation : $('fuelStatusFilter').value==='needs' ? ['needs','inquiry'].includes(r.fuelState) : r.fuelState===$('fuelStatusFilter').value)) && (filter === 'progress' ? (r.rawStates || []).includes('탁송 중') : filter === 'carrier' ? !!r.carrier : filter === 'confirmed' ? (r.rawStates || []).includes('탁송완료') : filter === 'review' ? ['needs','inquiry'].includes(r.fuelState) : originalIncludes(r, filter)) && (carrierFilter === 'all' || !!r.carrier === (carrierFilter === 'carrier')) && (processing === 'all' || processed.has(key(r)) === (processing === 'done')); };
     // Use the existing confirmed list for completed vehicles; keep its matching rules.
-    core.statuses.confirmed = '완료차량';
+    core.statuses.confirmed = '확인됨';
     const completedStat = doc.querySelector('.stats [data-filter="confirmed"]');
     completedStat.querySelector('span').textContent = '완료차량';
     const completedDot = doc.createElement('i');completedDot.className='dot green';
@@ -166,7 +213,7 @@
     // The original renderer still writes statMissing, so retain its hidden counter.
     doc.querySelector('.stats [data-filter="missing"]').style.display = 'none';
     doc.querySelector('.tabs [data-filter="missing"]').remove();
-    $('scope').querySelector('[value="confirmed"]').textContent = '완료차량';
+    $('scope').querySelector('[value="confirmed"]').textContent = '주유비 확인 완료 차량';
     const progressStat = doc.createElement('button');
     progressStat.type='button';progressStat.className='stat';progressStat.id='progressStat';
     progressStat.innerHTML='<span><i class="dot orange"></i>진행 중</span><strong id="statProgress">0<small>대</small></strong>';
@@ -206,7 +253,7 @@
       button.onclick=()=>{activateFilter(button.dataset.filter);redraw();};
     }
     const extraStyle = doc.createElement('style');
-    extraStyle.textContent = 'button:disabled,input:disabled,select:disabled{cursor:default}body.busy button:disabled{cursor:progress}.stats{grid-template-columns:repeat(5,minmax(0,1fr))}@media(max-width:1000px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}.dispatch-tools{padding:16px;border-bottom:1px solid #e2e9e4;display:flex;flex-wrap:wrap;gap:10px;align-items:center}.dispatch-tools .hint{font-size:12px;color:#607477;width:100%}.dispatch-tools select{max-width:100%;padding:8px}.dispatch-totals{font-weight:650;width:100%;font-size:13px;line-height:1.8}.dispatch-check{width:18px;height:18px;accent-color:#397956;cursor:pointer}.dispatch-selected{background:#edf8f1}.dispatch-processed .plate{text-decoration:line-through;color:#73847a}.badge.carrier{background:#edf0ff;color:#4a4090}.badge.conflict{background:#fff0ed;color:#b42318}.record-history{min-width:190px;max-width:320px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7}.record-history p{margin:8px 0}.dispatch-tools button{white-space:normal}';
+    extraStyle.textContent = 'button:disabled,input:disabled,select:disabled{cursor:default}body.busy button:disabled{cursor:progress}.stats{grid-template-columns:repeat(5,minmax(0,1fr))}@media(max-width:1000px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}.dispatch-tools{padding:16px;border-bottom:1px solid #e2e9e4;display:flex;flex-wrap:wrap;gap:10px;align-items:center}.dispatch-tools .hint{font-size:12px;color:#607477;width:100%}.dispatch-tools select{max-width:100%;padding:8px}.dispatch-totals{font-weight:650;width:100%;font-size:13px;line-height:1.8}.dispatch-check{width:18px;height:18px;accent-color:#397956;cursor:pointer}.dispatch-selected{background:#edf8f1}.dispatch-processed .plate{text-decoration:line-through;color:#73847a}.badge.carrier{background:#edf0ff;color:#4a4090}.badge.conflict{background:#fff0ed;color:#b42318}.record-history{min-width:190px;max-width:320px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7}.record-history p{margin:8px 0}.dispatch-tools button{white-space:normal}.fuel-review-cell{min-width:240px;max-width:340px;white-space:normal;font-size:12px}.fuel-review-cell p{margin:6px 0;line-height:1.6}.fuel-review-cell form{display:grid;gap:6px;margin-top:8px}.fuel-review-cell input{max-width:100%;padding:7px}.fuel-review-cell button{padding:6px;cursor:pointer}';
     doc.head.append(extraStyle);
     const tools = doc.createElement('div');tools.className='dispatch-tools';
     tools.innerHTML='<label>캐리어 분류 <select id="carrierFilter"><option value="all">전체 분류</option><option value="carrier">캐리어만</option><option value="other">캐리어 제외</option></select></label><label>처리 상태 <select id="processingFilter"><option value="all">전체</option><option value="pending">미처리만</option><option value="done">처리 완료만</option></select></label><button type="button" id="selectedPlates" class="button compact">선택 차량번호 복사</button><button type="button" id="selectedAmounts" class="button compact">선택 차량번호+금액 복사</button><button type="button" id="markDone" class="button compact">선택 처리 완료</button><button type="button" id="markPending" class="button compact">선택 미처리로</button><button type="button" id="copyInquiry" class="button compact">렌톡 문의 목록 복사</button><div id="dispatchTotals" class="dispatch-totals" role="status"></div><div class="hint">체크박스는 차량번호 단위로 선택합니다. 전체 선택·선택 저장은 현재 필터에 맞는 차량 기준입니다. 선택 저장은 하단 저장 범위에서 「선택한 차량」을 고르세요. 렌톡 메모·비고 등에 「캐리어」가 포함된 차량은 완료 여부와 무관하게 분류하며 렌톡 문의 목록에서는 제외합니다. 처리 표시는 현재 페이지에서만 유지되며 전체 초기화 시 지워집니다.</div>';
@@ -216,6 +263,62 @@
     const head = doc.querySelector('#table thead tr');
     const selectHead = doc.createElement('th');selectHead.innerHTML='<input type="checkbox" id="selectVisibleVehicles" class="dispatch-check" aria-label="현재 표시 조건의 차량 전체 선택">';head.prepend(selectHead);
     for (const label of ['처리','조회 근거 / 이전 기록']) {const th=doc.createElement('th');th.textContent=label;head.append(th);}
+    const originalDemo=$('demo').onclick;
+    $('demo').onclick=()=>{const before=app.getFiles();originalDemo();const files=app.getFiles();if(files!==before&&files.length===1&&files[0].key==='demo'){files[0].records.forEach(r=>r.dispatchDate='2026-10-23');$('run').click();}};
+    const fuelFilter=doc.createElement('label');fuelFilter.textContent='주유비 확인 ';
+    const fuelSelect=doc.createElement('select');fuelSelect.id='fuelStatusFilter';
+    for(const [value,label] of [['all','전체'],['needs','확인 필요'],['verified','확인됨'],['zero','없음(0원)'],['manual','수동확인']]){
+      const option=doc.createElement('option');option.value=value;option.textContent=label;fuelSelect.append(option);
+    }
+    fuelFilter.append(fuelSelect);tools.prepend(fuelFilter);
+    const diagnostics=doc.createElement('div');diagnostics.className='hint';diagnostics.id='fuelDiagnostics';diagnostics.setAttribute('role','status');tools.append(diagnostics);
+    const fuelHint=doc.createElement('div');fuelHint.className='hint';fuelHint.textContent='날짜가 있는 입력은 같은 날짜의 기록만 조회합니다. 날짜가 없으면 최신일 기준입니다. 빈 금액은 미입력, 숫자 0은 주유비 없음으로 구분합니다. 서로 다른 운행은 자동 합산하지 않습니다. 수동확인은 사유와 함께 이 브라우저에 최대 500건 저장되며 원본 기록이 바뀌면 다시 확인합니다.';tools.append(fuelHint);
+    const eraseConfirmations=doc.createElement('button');eraseConfirmations.type='button';eraseConfirmations.className='button compact';eraseConfirmations.textContent='저장된 수동확인 전체 삭제';tools.append(eraseConfirmations);
+    eraseConfirmations.onclick=()=>{
+      if(!Object.keys(fuelSaved).length){notify('저장된 수동확인이 없습니다.');return;}
+      if(!frame.contentWindow.confirm('이 브라우저에 저장된 수동확인 기록을 모두 삭제할까요?'))return;
+      try{localStorage.removeItem(fuelStorageKey);fuelSaved={};if(app.getResults().length)$('run').click();notify('수동확인 기록을 삭제했습니다.');}catch{notify('브라우저 저장소에 접근하지 못했습니다.');}
+    };
+    fuelSelect.onchange=()=>{selected.clear();redraw();};
+    const fuelTh=doc.createElement('th');fuelTh.textContent='주유비 확인 / 수동확인';head.append(fuelTh);
+    function updateFuelDiagnostics(){
+      const files=app.getFiles(),records=files.flatMap(f=>f.records||[]),all=core.unique(app.getResults());
+      const vendorNames={A:'한빛탁송',B:'오픈마일',C:'렌톡'},loaded=new Set(records.map(r=>r.vendor));
+      const missing=Object.keys(vendorNames).filter(v=>!loaded.has(v)).map(v=>vendorNames[v]);
+      const dates=[...new Set(core.parseInput($('input').value).vehicles.map(v=>(v.date||'').slice(0,10)).filter(Boolean))].sort();
+      const warnings=[];
+      if(missing.length)warnings.push('미첨부 업체: '+missing.join(', ')+' — 해당 업체 차량은 확인할 수 없습니다.');
+      for(const v of loaded){
+        const rows=records.filter(r=>r.vendor===v),available=rows.map(r=>r.dispatchDate||'').filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+        if(dates.length&&!available.length)warnings.push(vendorNames[v]+': 원본 운행일자 없음');
+        else if(dates.some(d=>d<available[0]||d>available[available.length-1]))warnings.push(vendorNames[v]+': 입력일 일부가 파일의 운행일 범위 밖입니다 ('+available[0]+' ~ '+available[available.length-1]+')');
+      }
+      diagnostics.textContent='주유비 확인 필요 '+all.filter(r=>['needs','inquiry'].includes(r.fuelState)).length+'대 · 없음(0원) '+all.filter(r=>r.fuelState==='zero').length+'대 · 수동확인 '+all.filter(r=>r.manualConfirmation).length+'대'+(warnings.length?' · '+warnings.join(' / '):'');
+    }
+    function appendFuelCell(tr,r){
+      if(tr.querySelector('.fuel-review-cell'))return;
+      const td=doc.createElement('td');td.className='fuel-review-cell';
+      const label=doc.createElement('strong');label.textContent=r.fuelLabel||'미조회';td.append(label);
+      if(r.fuelNotes?.length){const note=doc.createElement('p');note.textContent=r.fuelNotes.join(' · ');td.append(note);}
+      if(r.canConfirm){
+        const details=doc.createElement('details'),summary=doc.createElement('summary');summary.textContent='금액 수동확인';details.append(summary);
+        const form=doc.createElement('form'),amount=doc.createElement('input'),reason=doc.createElement('input'),save=doc.createElement('button'),clear=doc.createElement('button'),feedback=doc.createElement('span');
+        amount.type='text';amount.inputMode='numeric';amount.placeholder='확인한 금액(원)';amount.setAttribute('aria-label',r.plate+' 확인한 금액');amount.value=r.manualConfirmation?String(r.amount):'';
+        reason.type='text';reason.placeholder='확인 사유 또는 확인처';reason.maxLength=300;reason.setAttribute('aria-label',r.plate+' 확인 사유');reason.value=r.manualConfirmation?.reason||'';
+        save.type='submit';save.textContent='확인 저장';clear.type='button';clear.textContent='수동확인 해제';clear.disabled=!r.manualConfirmation;feedback.setAttribute('role','status');
+        form.append(amount,reason,save,clear,feedback);details.append(form);td.append(details);
+        form.onsubmit=e=>{
+          e.preventDefault();const value=core.money(amount.value),why=reason.value.trim();
+          if(value===null||!Number.isSafeInteger(value)||value<0||!why){feedback.textContent='0 이상의 정수 금액과 확인 사유를 입력해 주세요.';return;}
+          const next={...fuelSaved,[r.reviewKey]:{amount:value,reason:why,savedAt:new Date().toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})}};
+          while(Object.keys(next).length>500)delete next[Object.keys(next)[0]];
+          try{localStorage.setItem(fuelStorageKey,JSON.stringify(next));fuelSaved=next;$('run').click();notify('금액과 확인 사유를 저장했습니다.');}catch{feedback.textContent='저장하지 못했습니다. 브라우저 저장소 설정이나 용량을 확인해 주세요.';}
+        };
+        clear.onclick=()=>{const next={...fuelSaved};delete next[r.reviewKey];try{localStorage.setItem(fuelStorageKey,JSON.stringify(next));fuelSaved=next;$('run').click();notify('수동확인을 해제했습니다.');}catch{feedback.textContent='수동확인을 해제하지 못했습니다.';}};
+      }
+      tr.append(td);
+    }
+
     function visibleRows() {
       const q=core.plate($('search').value),vendor=$('vendorFilter').value,state=$('stateFilter').value,from=$('dateFrom').value,to=$('dateTo').value;
       const filter=doc.querySelector('.tabs [data-filter].active')?.dataset.filter || 'all';
@@ -226,7 +329,9 @@
     function redraw() {$('search').dispatchEvent(new frame.contentWindow.Event('input'));enhance();}
     function updateControls() {
       const visible=visibleRows(),rows=selectedRows(),all=core.unique(app.getResults());
-      const completedCount=all.filter(r=>r.status==='confirmed').length;
+      const completedCount=all.filter(r=>(r.rawStates||[]).includes('탁송완료')).length;
+      $('statConfirmed').replaceChildren(doc.createTextNode(completedCount.toLocaleString('ko-KR')));
+      const completedUnit=doc.createElement('small');completedUnit.textContent='대';$('statConfirmed').append(completedUnit);
       completedStat.setAttribute('aria-label','완료차량 '+completedCount+'대 보기');
       const progressCount=all.filter(r=>(r.rawStates||[]).includes('탁송 중')).length;
       $('statProgress').replaceChildren(doc.createTextNode(progressCount.toLocaleString('ko-KR')));
@@ -271,9 +376,11 @@
           history.slice().reverse().forEach(record=>{const p=doc.createElement('p');p.textContent=recordText(record,record===r.latestRecord&&!r.latestConflict);details.append(p)});source.append(details);tr.append(source);
         }
         tr.querySelector('.vehicle-select').checked=selected.has(plate);tr.querySelector('.vehicle-done').checked=processed.has(key(r));
+        appendFuelCell(tr,r);
         tr.classList.toggle('dispatch-selected',selected.has(plate));tr.classList.toggle('dispatch-processed',processed.has(key(r)));
       }
       updateControls();
+      updateFuelDiagnostics();
     }
     $('selectVisibleVehicles').onchange=e=>{selected.clear();if(e.target.checked)visibleRows().forEach(r=>selected.add(r.plate));enhance()};
     $('carrierFilter').onchange=e=>{carrierFilter=e.target.value;selected.clear();doc.querySelector('.tabs [data-filter="all"]').click();redraw()};
@@ -289,10 +396,10 @@
     clearList.onclick=()=>{
       if(doc.body.classList.contains('busy'))return;
       selected.clear();$('input').value='';$('input').dispatchEvent(new frame.contentWindow.Event('input'));
-      $('search').value='';$('vendorFilter').value='all';$('stateFilter').value='all';$('dateFrom').value='';$('dateTo').value='';$('scope').value='confirmed';processing='all';carrierFilter='all';$('carrierFilter').value='all';$('processingFilter').value='all';
+      $('search').value='';$('vendorFilter').value='all';$('stateFilter').value='all';$('dateFrom').value='';$('dateTo').value='';$('scope').value='confirmed';$('fuelStatusFilter').value='all';processing='all';carrierFilter='all';$('carrierFilter').value='all';$('processingFilter').value='all';
       doc.querySelector('.tabs [data-filter="all"]').click();$('input').focus();notify('차량목록을 비웠습니다. 업체 파일은 유지됩니다.');
     };
-    const reset=$('reset').onclick;$('reset').onclick=()=>{reset();if(!app.getFiles().length&&!$('input').value){selected.clear();processed.clear();processing='all';carrierFilter='all';$('carrierFilter').value='all';$('processingFilter').value='all';$('dateFrom').value='';$('dateTo').value='';redraw()}};
+    const reset=$('reset').onclick;$('reset').onclick=()=>{reset();if(!app.getFiles().length&&!$('input').value){selected.clear();processed.clear();$('fuelStatusFilter').value='all';processing='all';carrierFilter='all';$('carrierFilter').value='all';$('processingFilter').value='all';$('dateFrom').value='';$('dateTo').value='';redraw()}};
     let exporting=false,exportSerial=0;
     doc.querySelectorAll('[data-export]').forEach(button=>{
       const original=button.onclick;
@@ -307,6 +414,9 @@
         }catch(error){notify('저장하지 못했습니다: '+error.message)}finally{exporting=false;}
       };
     });
+    new MutationObserver(updateFuelDiagnostics).observe($('fileList'),{childList:true});
+    $('input').addEventListener('input',updateFuelDiagnostics);
+    $('help').onclick=()=>frame.contentWindow.alert('차량목록의 날짜가 있으면 같은 운행일만 조회하고, 날짜가 없으면 업체 전체 최신일을 적용합니다.\n금액 빈칸은 미입력, 숫자 0은 주유비 없음입니다.\n동일 내용의 중복 기록은 제외합니다. 같은 날 금액 충돌이나 서로 다른 운행번호·출발지가 있으면 확인이 필요합니다.\n주유비 확인 필터에서 확인 필요 차량을 모아 보고, 완료된 건은 확인 금액과 사유를 수동 저장할 수 있습니다.\n수동확인은 이 브라우저에만 저장되고 원본 내용이 달라지면 다시 확인합니다.\n저장 범위의 주유비 확인 완료 차량은 금액이 확인된 차량만 포함합니다.\n원본 금액은 기존대로 10원 단위 반올림하며 수동 입력 금액은 그대로 적용합니다.\n렌톡 캐리어 분류와 제주 출발 판정은 기존 기준을 유지합니다.');
     new MutationObserver(enhance).observe(body,{childList:true});
     enhance();
 
