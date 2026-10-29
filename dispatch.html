@@ -21,9 +21,39 @@
     body.dataset.individualCopy = 'true';
     // Choose the latest date across vendors and retain the full audit trail.
     const core = frame.contentWindow.DispatchCore;
+    // Keep memo metadata in both the page reader and the isolated file worker.
+    function installCarrierReader(core) {
+      const readSheets = core.readSheets;
+      core.readSheets = function(sheets, name) {
+        const result = readSheets(sheets, name);
+        const metadata = new Map();
+        for (const record of result.records) {
+          if (record.vendor !== 'C') continue;
+          if (!metadata.has(record.sheet)) {
+            const sheet = sheets.find(sheet => sheet.name === record.sheet);
+            const clean = value => String(value ?? '').normalize('NFKC').replace(/\s+/g, '');
+            const header = sheet?.rows.slice(0, 30).find(row => row.some(v => clean(v) === '출발지차량번호') && row.some(v => clean(v) === '운행상태'));
+            const columns = header ? header.map((value, i) => /메모|비고|특이사항|전달사항|요청사항|요청내용|전달내용/.test(clean(value)) ? i : -1).filter(i => i >= 0) : [];
+            metadata.set(record.sheet, {sheet, columns});
+          }
+          const {sheet, columns} = metadata.get(record.sheet);
+          if (!sheet) continue;
+          const raw = sheet.rows[record.row - (sheet.startRow ?? 1)] || [];
+          record.memo = [...new Set(columns.map(i => String(raw[i] ?? '').trim()).filter(Boolean))].join(' · ');
+          record.carrier = /캐리어/.test(record.memo);
+        }
+        return result;
+      };
+    }
+    if (core) {
+      installCarrierReader(core);
+      const workerSource = doc.getElementById('worker-source');
+      workerSource.textContent = '(' + installCarrierReader.toString() + ')(DispatchCore);\n' + workerSource.textContent;
+    }
     if (core && !core._latestAcrossVendors) {
       const originalMatch = core.match;
       core.statuses.conflict = '최신일 금액 충돌';
+      core.statuses.carrier = '캐리어';
       core.match = function(input, files) {
         const history = new Map();
         for (const file of files) for (const record of file.records || []) {
@@ -41,8 +71,11 @@
         }
         return originalMatch(input, [{name:'최신 기록', records:[...latest.values()]}]).map(row => {
           const record = latest.get(row.plate), conflict = conflicts.get(row.plate);
-          return {...row, latestRecord:record, recordHistory:history.get(row.plate) || [], latestConflict:!!conflict,
-            ...(conflict ? {status:'conflict', amount:null, meaning:'동일 최신일 금액 상이', sources:conflict.map(r => `${r.file} / ${r.sheet} / ${r.row}행`).join('; ')} : {})};
+          const carrierRecords = (history.get(row.plate) || []).filter(r => r.vendor === 'C' && r.carrier);
+          const carrier = carrierRecords.length > 0;
+          return {...row, latestRecord:record, recordHistory:history.get(row.plate) || [], latestConflict:!!conflict, carrier, carrierMemo:carrierRecords.map(r=>r.memo).filter(Boolean).join(' · '),
+            ...(conflict ? {status:'conflict', amount:null, meaning:'동일 최신일 금액 상이', sources:conflict.map(r => `${r.file} / ${r.sheet} / ${r.row}행`).join('; ')} : {}),
+            ...(carrier ? {status:'carrier', amount:null, cInquiry:false, meaning:'캐리어', sources:carrierRecords.map(r=>`${r.file} / ${r.sheet} / ${r.row}행`).join('; ')} : {})};
         });
       };
       core._latestAcrossVendors = true;
@@ -106,13 +139,18 @@
     const selected = new Set(), processed = new Set();
     const key = r => JSON.stringify([r.plate,r.dispatchDate,r.amount,r.sources,r.status]);
     const originalIncludes = core.includes;
-    let processing = 'all';
-    core.includes = (r, filter) => originalIncludes(r, filter) && (processing === 'all' || processed.has(key(r)) === (processing === 'done'));
+    let processing = 'all', carrierFilter = 'all';
+    const originalNotes = core.notes, originalValues = core.values;
+    core.notes = r => [originalNotes(r), r.carrier ? '캐리어' : '', r.carrierMemo || ''].filter(Boolean).join(' · ');
+    core.values = r => {const values=originalValues(r);values[8]=core.notes(r);return values;};
+    core.textExport = rows => '\ufeff' + [core.headers, ...core.unique(rows).map(core.values)].map(row => row.map(v => String(v ?? '').replace(/[\t\r\n]/g,' ')).join('\t')).join('\r\n');
+
+    core.includes = (r, filter) => originalIncludes(r, filter) && (carrierFilter === 'all' || !!r.carrier === (carrierFilter === 'carrier')) && (processing === 'all' || processed.has(key(r)) === (processing === 'done'));
     const extraStyle = doc.createElement('style');
-    extraStyle.textContent = '.dispatch-tools{padding:16px;border-bottom:1px solid #e2e9e4;display:flex;flex-wrap:wrap;gap:10px;align-items:center}.dispatch-tools .hint{font-size:12px;color:#607477;width:100%}.dispatch-tools select{max-width:100%;padding:8px}.dispatch-totals{font-weight:650;width:100%;font-size:13px;line-height:1.8}.dispatch-check{width:18px;height:18px;accent-color:#397956;cursor:pointer}.dispatch-selected{background:#edf8f1}.dispatch-processed .plate{text-decoration:line-through;color:#73847a}.badge.conflict{background:#fff0ed;color:#b42318}.record-history{min-width:190px;max-width:320px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7}.record-history p{margin:8px 0}.dispatch-tools button{white-space:normal}';
+    extraStyle.textContent = '.dispatch-tools{padding:16px;border-bottom:1px solid #e2e9e4;display:flex;flex-wrap:wrap;gap:10px;align-items:center}.dispatch-tools .hint{font-size:12px;color:#607477;width:100%}.dispatch-tools select{max-width:100%;padding:8px}.dispatch-totals{font-weight:650;width:100%;font-size:13px;line-height:1.8}.dispatch-check{width:18px;height:18px;accent-color:#397956;cursor:pointer}.dispatch-selected{background:#edf8f1}.dispatch-processed .plate{text-decoration:line-through;color:#73847a}.badge.carrier{background:#edf0ff;color:#4a4090}.badge.conflict{background:#fff0ed;color:#b42318}.record-history{min-width:190px;max-width:320px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.7}.record-history p{margin:8px 0}.dispatch-tools button{white-space:normal}';
     doc.head.append(extraStyle);
     const tools = doc.createElement('div');tools.className='dispatch-tools';
-    tools.innerHTML='<label>처리 상태 <select id="processingFilter"><option value="all">전체</option><option value="pending">미처리만</option><option value="done">처리 완료만</option></select></label><button type="button" id="selectedPlates" class="button compact">선택 차량번호 복사</button><button type="button" id="selectedAmounts" class="button compact">선택 차량번호+금액 복사</button><button type="button" id="markDone" class="button compact">선택 처리 완료</button><button type="button" id="markPending" class="button compact">선택 미처리로</button><button type="button" id="copyInquiry" class="button compact">렌톡 문의 목록 복사</button><div id="dispatchTotals" class="dispatch-totals" role="status"></div><div class="hint">체크박스는 차량번호 단위로 선택합니다. 전체 선택·선택 저장은 현재 필터에 맞는 차량 기준입니다. 선택 저장은 하단 저장 범위에서 「선택한 차량」을 고르세요. 처리 표시는 현재 페이지에서만 유지되며 전체 초기화 시 지워집니다.</div>';
+    tools.innerHTML='<label>캐리어 분류 <select id="carrierFilter"><option value="all">전체 분류</option><option value="carrier">캐리어만</option><option value="other">캐리어 제외</option></select></label><label>처리 상태 <select id="processingFilter"><option value="all">전체</option><option value="pending">미처리만</option><option value="done">처리 완료만</option></select></label><button type="button" id="selectedPlates" class="button compact">선택 차량번호 복사</button><button type="button" id="selectedAmounts" class="button compact">선택 차량번호+금액 복사</button><button type="button" id="markDone" class="button compact">선택 처리 완료</button><button type="button" id="markPending" class="button compact">선택 미처리로</button><button type="button" id="copyInquiry" class="button compact">렌톡 문의 목록 복사</button><div id="dispatchTotals" class="dispatch-totals" role="status"></div><div class="hint">체크박스는 차량번호 단위로 선택합니다. 전체 선택·선택 저장은 현재 필터에 맞는 차량 기준입니다. 선택 저장은 하단 저장 범위에서 「선택한 차량」을 고르세요. 렌톡 메모·비고 등에 「캐리어」가 포함된 차량은 완료 여부와 무관하게 분류하며 렌톡 문의 목록에서는 제외합니다. 처리 표시는 현재 페이지에서만 유지되며 전체 초기화 시 지워집니다.</div>';
     doc.querySelector('.resulthead').after(tools);
     const clearList = doc.createElement('button');clearList.type='button';clearList.className='button';clearList.textContent='차량목록만 초기화';clearList.id='clearVehicleList';$('reset').before(clearList);
     const selectedOption = doc.createElement('option');selectedOption.value='selected';selectedOption.textContent='선택한 차량';$('scope').append(selectedOption);
@@ -129,13 +167,13 @@
     function redraw() {$('search').dispatchEvent(new frame.contentWindow.Event('input'));enhance();}
     function updateControls() {
       const visible=visibleRows(),rows=selectedRows(),all=core.unique(app.getResults());
-      $('dispatchTotals').textContent=`금액 확인 총액 ${total(all)}원 · 표시 ${visible.length}대 / ${total(visible)}원 · 선택 ${rows.length}대 / ${total(rows)}원 · 처리 완료 ${all.filter(r=>processed.has(key(r))).length}대 (금액 확인 차량만 합산)`;
+      $('dispatchTotals').textContent=`금액 확인 총액 ${total(all)}원 · 표시 ${visible.length}대 / ${total(visible)}원 · 선택 ${rows.length}대 / ${total(rows)}원 · 캐리어 ${all.filter(r=>r.carrier).length}대 · 처리 완료 ${all.filter(r=>processed.has(key(r))).length}대 (금액 확인 차량만 합산)`;
       const box=$('selectVisibleVehicles');box.disabled=!visible.length;box.checked=visible.length>0&&rows.length===visible.length;box.indeterminate=rows.length>0&&rows.length<visible.length;
       for (const id of ['selectedPlates','selectedAmounts','markDone','markPending']) $(id).disabled=!rows.length;
       $('copyInquiry').disabled=!visible.some(r=>r.cInquiry);
     }
     function recordText(r, chosen) {
-      return `${chosen?'적용 기록':'이전 / 동시 기록'} · ${r.dispatchDate||'일자 없음'}\n${({A:'한빛탁송',B:'오픈마일',C:'렌톡'})[r.vendor]||r.vendor} · ${r.state||'상태 없음'} · ${r.cost==null?'금액 없음':String(r.cost)+'원'}\n${r.file||'파일명 없음'} / ${r.sheet||'시트 없음'} / ${r.row||'?'}행`;
+      return `${chosen?'적용 기록':'이전 / 동시 기록'} · ${r.dispatchDate||'일자 없음'}\n${({A:'한빛탁송',B:'오픈마일',C:'렌톡'})[r.vendor]||r.vendor} · ${r.state||'상태 없음'} · ${r.cost==null?'금액 없음':String(r.cost)+'원'}\n${r.file||'파일명 없음'} / ${r.sheet||'시트 없음'} / ${r.row||'?'}행${r.memo?'\n메모: '+r.memo:''}${r.carrier?'\n분류: 캐리어':''}`;
     }
     function enhance() {
       const visible=visibleRows(),plates=new Set(visible.map(r=>r.plate));
@@ -161,6 +199,7 @@
       updateControls();
     }
     $('selectVisibleVehicles').onchange=e=>{selected.clear();if(e.target.checked)visibleRows().forEach(r=>selected.add(r.plate));enhance()};
+    $('carrierFilter').onchange=e=>{carrierFilter=e.target.value;selected.clear();doc.querySelector('.tabs [data-filter="all"]').click();redraw()};
     $('processingFilter').onchange=e=>{processing=e.target.value;selected.clear();redraw()};
     async function copyRows(rows,amounts=false) {
       if (!rows.length) {notify('복사할 차량이 없습니다.');return;}
@@ -173,10 +212,10 @@
     clearList.onclick=()=>{
       if(doc.body.classList.contains('busy'))return;
       selected.clear();$('input').value='';$('input').dispatchEvent(new frame.contentWindow.Event('input'));
-      $('search').value='';$('vendorFilter').value='all';$('stateFilter').value='all';$('dateFrom').value='';$('dateTo').value='';$('scope').value='confirmed';processing='all';$('processingFilter').value='all';
+      $('search').value='';$('vendorFilter').value='all';$('stateFilter').value='all';$('dateFrom').value='';$('dateTo').value='';$('scope').value='confirmed';processing='all';carrierFilter='all';$('carrierFilter').value='all';$('processingFilter').value='all';
       doc.querySelector('.tabs [data-filter="all"]').click();$('input').focus();notify('차량목록을 비웠습니다. 업체 파일은 유지됩니다.');
     };
-    const reset=$('reset').onclick;$('reset').onclick=()=>{reset();if(!app.getFiles().length&&!$('input').value){selected.clear();processed.clear();processing='all';$('processingFilter').value='all';$('dateFrom').value='';$('dateTo').value='';redraw()}};
+    const reset=$('reset').onclick;$('reset').onclick=()=>{reset();if(!app.getFiles().length&&!$('input').value){selected.clear();processed.clear();processing='all';carrierFilter='all';$('carrierFilter').value='all';$('processingFilter').value='all';$('dateFrom').value='';$('dateTo').value='';redraw()}};
     let exporting=false,exportSerial=0;
     doc.querySelectorAll('[data-export]').forEach(button=>{
       const original=button.onclick;
