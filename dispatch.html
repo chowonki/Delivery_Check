@@ -60,12 +60,22 @@
           if (!history.has(record.plate)) history.set(record.plate, []);
           history.get(record.plate).push(record);
         }
-        const latest = new Map(), conflicts = new Map();
+        const latest = new Map(), conflicts = new Map(), selectionReasons = new Map();
         for (const [plate, records] of history) {
           const dateOf = r => /^\d{4}-\d{2}-\d{2}$/.test(r.dispatchDate || '') ? r.dispatchDate : '';
           const date = records.reduce((max, r) => dateOf(r) > max ? dateOf(r) : max, '');
           const candidates = records.filter(r => dateOf(r) === date);
-          latest.set(plate, candidates[candidates.length - 1]);
+          let chosen = candidates[candidates.length - 1];
+          // Same-day Openmile snapshots must not regress a completed job to an active state.
+          // Keep newer dates and explicit cancellations as supplied by the source.
+          if (date && chosen.vendor === 'B' && !core.complete(chosen) && !/취소|캔슬|cancel/i.test(String(chosen.state || ''))) {
+            const completed = candidates.filter(r => r.vendor === 'B' && core.complete(r));
+            if (completed.length) {
+              chosen = completed[completed.length - 1];
+              selectionReasons.set(plate, '동일 최신일 오픈마일 기록 중 완료 기록 우선 적용');
+            }
+          }
+          latest.set(plate, chosen);
           const priced = candidates.filter(r => core.complete(r) && r.vendor !== 'C' && r.cost !== null && Number.isFinite(Number(r.cost)));
           if (new Set(priced.map(r => Number(r.cost))).size > 1) conflicts.set(plate, candidates);
         }
@@ -73,7 +83,7 @@
           const record = latest.get(row.plate), conflict = conflicts.get(row.plate);
           const carrierRecords = (history.get(row.plate) || []).filter(r => r.vendor === 'C' && r.carrier);
           const carrier = carrierRecords.length > 0;
-          return {...row, latestRecord:record, recordHistory:history.get(row.plate) || [], latestConflict:!!conflict, carrier, carrierMemo:carrierRecords.map(r=>r.memo).filter(Boolean).join(' · '),
+          return {...row, latestRecord:record, recordHistory:history.get(row.plate) || [], latestConflict:!!conflict, selectionReason:selectionReasons.get(row.plate) || '', carrier, carrierMemo:carrierRecords.map(r=>r.memo).filter(Boolean).join(' · '),
             ...(conflict ? {status:'conflict', amount:null, meaning:'동일 최신일 금액 상이', sources:conflict.map(r => `${r.file} / ${r.sheet} / ${r.row}행`).join('; ')} : {}),
             ...(carrier ? {status:'carrier', amount:null, cInquiry:false, meaning:'캐리어', sources:carrierRecords.map(r=>`${r.file} / ${r.sheet} / ${r.row}행`).join('; ')} : {})};
         });
@@ -188,6 +198,7 @@
           const doneCell=doc.createElement('td'),done=doc.createElement('input');done.type='checkbox';done.className='dispatch-check vehicle-done';done.setAttribute('aria-label',plate+' 처리 완료');
           done.onchange=()=>{if(done.checked)processed.add(key(r));else processed.delete(key(r));redraw()};doneCell.append(done);tr.append(doneCell);
           const source=doc.createElement('td'),details=doc.createElement('details'),summary=doc.createElement('summary');summary.textContent=r.latestConflict?'금액 충돌 · 근거 보기':'조회 근거 ('+(r.recordHistory||[]).length+'건)';details.append(summary);details.className='record-history';
+          if(r.selectionReason){const reason=doc.createElement('p');reason.textContent=r.selectionReason;details.append(reason);}
           if(r.latestConflict){const warning=doc.createElement('p');warning.textContent='같은 최신일의 완료 금액이 달라 자동 확정하지 않았습니다.';details.append(warning);}
           const history=r.recordHistory||[];
           if(!history.length){const p=doc.createElement('p');p.textContent='일치하는 원본 기록이 없습니다.';details.append(p);}
