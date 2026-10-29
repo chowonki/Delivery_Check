@@ -1,1 +1,80 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>탁송체크 · 차량 조회</title><style>*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#f5f7f5}nav{height:54px;display:flex;align-items:center;gap:20px;padding:0 20px;background:#fff;border-bottom:1px solid #dfe7e1}a{color:#254b3b;text-decoration:none;font-size:14px}a:focus-visible{outline:2px solid #254b3b}iframe{display:block;width:100%;height:calc(100dvh - 54px);border:0}</style></head><body><nav aria-label="기능 이동"><a href="./index.html">← 홈</a><a href="./dispatch.html" aria-current="page">탁송체크</a><a href="./transfer.html">하나은행 이체파일</a></nav><iframe src="./dispatch-tool.html" title="탁송체크 차량 조회" allow="clipboard-write"></iframe></body></html>
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>탁송체크 · 차량 조회</title><style>*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#f5f7f5}nav{height:54px;display:flex;align-items:center;gap:20px;padding:0 20px;background:#fff;border-bottom:1px solid #dfe7e1}a{color:#254b3b;text-decoration:none;font-size:14px}a:focus-visible{outline:2px solid #254b3b}iframe{display:block;width:100%;height:calc(100dvh - 54px);border:0}</style></head><body><nav aria-label="기능 이동"><a href="./index.html">← 홈</a><a href="./dispatch.html" aria-current="page">탁송체크</a><a href="./transfer.html">하나은행 이체파일</a></nav><iframe src="./dispatch-tool.html" title="탁송체크 차량 조회" allow="clipboard-write"></iframe><script>
+(() => {
+  const frame = document.querySelector('iframe');
+  const status = document.createElement('div');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#254b3b;color:white;border-radius:10px;padding:12px 18px;z-index:1000;pointer-events:none';
+  status.hidden = true;
+  document.body.append(status);
+  let timer;
+  function notify(text) {
+    clearTimeout(timer);
+    status.textContent = text;
+    status.hidden = false;
+    timer = setTimeout(() => { status.hidden = true; }, 2200);
+  }
+  function setup() {
+    const doc = frame.contentDocument;
+    const body = doc && doc.getElementById('body');
+    if (!body || body.dataset.individualCopy) return;
+    body.dataset.individualCopy = 'true';
+    const style = doc.createElement('style');
+    style.textContent = '.cell-copy{display:inline-block;border:0;background:transparent;color:inherit;font:inherit;font-weight:inherit;padding:4px 0;cursor:pointer;text-align:inherit;border-radius:4px}.cell-copy:hover{text-decoration:underline;text-underline-offset:4px}.cell-copy:focus-visible{outline:2px solid #397956;outline-offset:4px}';
+    doc.head.append(style);
+    function decorate() {
+      body.querySelectorAll('td.plate,td.amount').forEach(cell => {
+        if (cell.querySelector('.cell-copy')) return;
+        const isAmount = cell.classList.contains('amount');
+        let value = cell.textContent.trim();
+        if (isAmount) {
+          value = value.replace(/,/g, '');
+          if (!/^-?\d+(?:\.\d+)?$/.test(value)) return;
+        } else if (!value || value === '—') return;
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'cell-copy';
+        button.textContent = value;
+        button.dataset.copyValue = value;
+        const label = isAmount ? '금액' : '차량번호';
+        button.title = label + ' 복사: ' + value;
+        button.setAttribute('aria-label', label + ' ' + value + ' 복사');
+        cell.replaceChildren(button);
+      });
+    }
+    async function copyValue(value) {
+      try {
+        if (!navigator.clipboard || !window.isSecureContext) throw new Error('fallback');
+        await navigator.clipboard.writeText(value);
+      } catch {
+        const text = doc.createElement('textarea');
+        const focused = doc.activeElement;
+        text.value = value;
+        text.style.cssText = 'position:fixed;left:-9999px;top:0';
+        doc.body.append(text);
+        try {
+          text.focus(); text.select(); text.setSelectionRange(0, value.length);
+          if (!doc.execCommand('copy')) throw new Error('copy failed');
+        } finally {
+          text.remove();
+          if (focused && focused.focus) focused.focus({preventScroll:true});
+        }
+      }
+    }
+    body.addEventListener('click', async event => {
+      const button = event.target.closest('.cell-copy');
+      if (!button || !body.contains(button)) return;
+      try {
+        await copyValue(button.dataset.copyValue);
+        notify(button.dataset.copyValue + ' 복사 완료');
+      } catch {
+        notify('복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.');
+      }
+    });
+    new MutationObserver(decorate).observe(body, {childList:true});
+    decorate();
+  }
+  frame.addEventListener('load', setup);
+  if (frame.contentDocument && frame.contentDocument.readyState === 'complete') setup();
+})();
+</script></body></html>
