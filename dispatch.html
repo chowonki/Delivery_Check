@@ -19,6 +19,26 @@
     const body = doc && doc.getElementById('body');
     if (!body || body.dataset.individualCopy) return;
     body.dataset.individualCopy = 'true';
+    // Select the single latest record per plate across every vendor before matching.
+    const core = frame.contentWindow.DispatchCore;
+    if (core && !core._latestAcrossVendors) {
+      const originalMatch = core.match;
+      core.match = function(input, files) {
+        const latest = new Map();
+        let serial = 0;
+        for (const file of files) for (const record of file.records || []) {
+          const date = /^\\d{4}-\\d{2}-\\d{2}$/.test(record.dispatchDate || '') ? record.dispatchDate : '';
+          const current = latest.get(record.plate);
+          if (!current || date > current.date || (date === current.date && serial > current.serial))
+            latest.set(record.plate, { record, date, serial });
+          serial++;
+        }
+        const selected = [...latest.values()].map(item => item.record);
+        return originalMatch(input, [{name:'최신 기록',records:selected}]);
+      };
+      core._latestAcrossVendors = true;
+    }
+
     const style = doc.createElement('style');
     style.textContent = '.cell-copy{display:inline-block;border:0;background:transparent;color:inherit;font:inherit;font-weight:inherit;padding:4px 0;cursor:pointer;text-align:inherit;border-radius:4px}.cell-copy:hover{text-decoration:underline;text-underline-offset:4px}.cell-copy:focus-visible{outline:2px solid #397956;outline-offset:4px}';
     doc.head.append(style);
