@@ -52,3 +52,29 @@ test('automatic split duplicates are allowed while independent duplicates are bl
  assert.equal(run("validate(data[2]).includes('동일 계좌·금액·차량번호 중복')"),true);
  run('data=[]');
 });
+
+const filenameSource=html.match(/<script>([\s\S]*?)<\/script>/)[1].split("let lastExportStamp=")[1].split('function excel()')[0];
+function filenameContext(){
+ const fresh=vm.createContext({});
+ vm.runInContext(source+"\nlet lastExportStamp="+filenameSource,fresh);
+ return fresh;
+}
+test('download names identify the exported vehicles and exact total without extra input',()=>{
+ const now=new Date('2026-10-31T05:20:35Z');
+ const cases=[
+  [[{plate:'123가4567',amount:'35000'}],'123가4567_35,000원_1031_142035.xlsx'],
+  [[{plate:'123가4567',amount:'50000'},{plate:'45나6789',amount:'400000'},{plate:'234다5678',amount:'400000'}],'123가4567외2대_총850,000원_1031_142035.xlsx'],
+  [[{amount:'50000'},{amount:'400000'},{amount:'400000'}],'송금3건_총850,000원_1031_142035.xlsx'],
+  [[{plate:'123가4567',amount:'100000000'},{plate:'123가4567',amount:'20000000'}],'123가4567_총120,000,000원_1031_142035.xlsx'],
+  [[{plate:'123가4567',commentPlates:['123가4567','45나6789','234다5678'],amount:'850000'}],'123가4567외2대_총850,000원_1031_142035.xlsx'],
+  [[{plate:'45나6789',commentPlates:['123가4567'],amount:'35000'}],'45나6789_35,000원_1031_142035.xlsx']
+ ];
+ for(const [rows,want] of cases)assert.equal(filenameContext().uniqueTransferFilename(rows,now),want);
+});
+test('same-second exports get a suffix and dates use Korean time across midnight',()=>{
+ const fresh=filenameContext(),rows=[{plate:'123가4567',amount:'35000'}],now=new Date('2026-10-31T15:00:00Z');
+ assert.equal(fresh.uniqueTransferFilename(rows,now),'123가4567_35,000원_1101_000000.xlsx');
+ assert.equal(fresh.uniqueTransferFilename(rows,now),'123가4567_35,000원_1101_000000_2.xlsx');
+ assert.equal(fresh.uniqueTransferFilename(rows,now),'123가4567_35,000원_1101_000000_3.xlsx');
+ assert.equal(fresh.uniqueTransferFilename(rows,new Date('2026-10-31T15:00:01Z')),'123가4567_35,000원_1101_000001.xlsx');
+});
