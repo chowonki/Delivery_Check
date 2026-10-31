@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import vm from 'node:vm';
+const source = await readFile(new URL('../hanbit-connector/download.js',import.meta.url),'utf8');
+const {todayKorea,excelUrl,download} = vm.runInNewContext(source.replace(/export /g,'') + '\n;({todayKorea,excelUrl,download})', {Intl,Date,URL,URLSearchParams,AbortSignal,TextDecoder,Uint8Array,btoa,fetch});
+assert.equal(todayKorea(new Date('2026-10-31T14:59:59Z')),'2026-10-31');
+assert.equal(todayKorea(new Date('2026-10-31T15:00:00Z')),'2026-11-01');
+assert.equal(todayKorea(new Date('2026-12-31T15:00:00Z')),'2027-01-01');
+const url = new URL(excelUrl('2026-11-01'));
+assert.equal(url.pathname,'/admin/check/check/excel_download');
+assert.equal(url.searchParams.get('_search_s_date'),'2026-11-01');
+assert.equal(url.searchParams.get('_search_e_date'),'2026-11-01');
+assert.equal(url.searchParams.size,6);
+const response = (body,options={},url='https://check.hanbitdeli.com/admin/check/check/excel_download') => {
+  const r = new Response(body,options); Object.defineProperty(r,'url',{value:url}); return r;
+};
+await assert.rejects(download(async()=>response('login',{},'https://check.hanbitdeli.com/member/login?redirect=/admin')),e=>e.code==='LOGIN_REQUIRED');
+for (const status of [401,403]) await assert.rejects(download(async()=>response('',{status})),e=>e.code==='LOGIN_REQUIRED');
+await assert.rejects(download(async()=>response('<html><form><input type="password"></form></html>')),e=>e.code==='LOGIN_REQUIRED');
+await assert.rejects(download(async()=>response('<script>location.href="/member/login"</script>')),e=>e.code==='LOGIN_REQUIRED');
+await assert.rejects(download(async()=>{throw Error('offline')}),e=>e.code==='NETWORK');
+await assert.rejects(download(async()=>response('',{status:500})),e=>e.code==='HTTP');
+await assert.rejects(download(async()=>response('<html>maintenance</html>')),e=>e.code==='FORMAT');
+await assert.rejects(download(async()=>response('PK',{headers:{'content-length':String(41*1024*1024)}})),e=>e.code==='SIZE');
+const bytes = new Uint8Array([0x50,0x4b,3,4,0,255]);
+const result = await download(async(url,options)=>{
+  assert.equal(options.credentials,'include'); assert.equal(options.cache,'no-store');
+  assert.equal(new URL(url).searchParams.get('_search_s_date'),'2026-11-01');
+  return response(bytes);
+},new Date('2026-10-31T15:00:00Z'));
+assert.equal(result.name,'한빛탁송_2026-11-01.xlsx');
+assert.deepEqual(Buffer.from(result.base64,'base64'),Buffer.from(bytes));
+for (const file of ['../hanbit.js','../hanbit-connector/bridge.js']) new vm.Script(await readFile(new URL(file,import.meta.url),'utf8'));
+JSON.parse(await readFile(new URL('../hanbit-connector/manifest.json',import.meta.url),'utf8'));
+console.log('한빛 날짜 경계·로그인 오류·통신 오류·파일 검증·정상 다운로드 검사 통과');

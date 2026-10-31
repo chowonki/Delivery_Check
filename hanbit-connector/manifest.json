@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "WorkTool 한빛탁송 연결",
+  "version": "1.0.0",
+  "description": "WorkTool에서 로그인된 한빛탁송의 오늘 엑셀을 가져옵니다.",
+  "host_permissions": ["https://check.hanbitdeli.com/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "content_scripts": [{
+    "matches": ["https://chowonki.github.io/WorkTool/*"],
+    "js": ["bridge.js"],
+    "run_at": "document_start"
+  }]
+}

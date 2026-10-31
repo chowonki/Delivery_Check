@@ -95,3 +95,25 @@ WorkTool/
 ```
 
 HTML·CSS·JavaScript로 구성된 정적 웹 프로젝트입니다. 탁송체크를 수정할 때는 기본 화면인 `dispatch-tool.html`과 이를 확장하는 `dispatch.html`을 함께 확인합니다.
+
+## 한빛탁송 오늘 엑셀 자동 가져오기
+
+탁송체크의 **한빛탁송 오늘 엑셀 자동 가져오기**를 누르면 한국 시간 기준 오늘 날짜를 `_search_s_date`·`_search_e_date`에 넣어 엑셀을 받아 기존 업체 파일 처리기에 첨부합니다. 페이지를 열기만 해서는 다운로드하지 않습니다.
+
+1. [연결 설치 안내](./hanbit-setup.html)에 따라 Chrome·Edge용 `hanbit-connector.zip`을 한 번 설치합니다.
+2. 같은 브라우저에서 한빛탁송에 로그인한 뒤 WorkTool을 새로고침합니다.
+3. 자동 가져오기를 누르고 첨부 완료 메시지를 확인한 뒤 차량 조회를 실행합니다.
+
+로그인이 만료되면 **한빛탁송 로그인 필요** 오류를 표시합니다. 로그인 페이지로의 리다이렉트, HTTP 401·403, 로그인 HTML 응답을 확인합니다. 통신 오류와 지원하지 않는 파일은 별도 오류로 안내하며 기존 첨부 파일을 유지합니다. 비밀번호나 세션 쿠키를 WorkTool에 저장하지 않습니다.
+
+한빛 서버의 응답은 `Access-Control-Allow-Origin: *`이므로 로그인 쿠키를 포함한 웹페이지 직접 요청에는 사용할 수 없습니다. [Chrome의 확장기능 네트워크 권한](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests)과 [쿠키 처리](https://developer.chrome.com/docs/extensions/develop/concepts/storage-and-cookies)를 이용해 브라우저 안에서 연결합니다. 확장기능의 요청 대상은 한빛탁송의 정해진 오늘 엑셀 주소로 제한되며, 연결 페이지는 `https://chowonki.github.io/WorkTool/` 아래로 제한됩니다. 브라우저가 쿠키 사용을 차단하면 로그인 상태가 전달되지 않을 수 있습니다.
+
+다운로드는 최대 40MB의 .xlsx를 지원합니다. 반복해서 가져오면 이전 자동 첨부 자료만 교체하고, 수동 첨부 파일과 다른 업체 자료는 보존합니다. 다른 업체 양식이나 기록을 확인할 수 없는 파일은 자동 첨부하지 않습니다. 한빛 계정으로 로그인한 실제 .xlsx 다운로드는 계정이 있는 환경에서 확인해야 합니다.
+
+확장기능 소스를 변경하면 아래 명령으로 배포 ZIP도 갱신합니다.
+
+```bash
+python3 -m zipfile -c hanbit-connector.zip hanbit-connector/manifest.json hanbit-connector/background.js hanbit-connector/bridge.js hanbit-connector/download.js
+node tests/hanbit.mjs
+node tests/hanbit-ui.mjs
+```
