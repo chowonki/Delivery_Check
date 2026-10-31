@@ -1,0 +1,54 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {readFileSync}=require('node:fs');
+const vm=require('node:vm');
+const html=readFileSync(require('node:path').join(__dirname,'../transfer.html'),'utf8');
+// Run the page's actual parsing and validation code without browser event bindings.
+const source=html.match(/<script>([\s\S]*?)<\/script>/)[1].split("$('errorsOnly').onchange=")[0];
+const context=vm.createContext({});
+vm.runInContext(source,context);
+const run=code=>vm.runInContext(code,context,{timeout:1000});
+
+test('documented whole-won formats preserve their exact value',()=>{
+ for(const [text,want] of [['35,000원','35000'],['1000만원','10000000'],['천만원','10000000'],['1억 2천만원','120000000'],['금액: 10000000','10000000'],['₩35,000','35000'],['금액: 7,240,000원','7240000']]){
+  assert.equal(context.parseKoreanAmount(text),want,text);
+ }
+});
+test('signed, decimal and malformed amounts never become positive transfers',()=>{
+ for(const value of ['-35000원','- 35000원','−35,000원','금액: -35000원','금액 -35000원','금액: -천만원','₩-35000','1.5만원','.5만원','35,000.50원','35,00원','35,00원 500원','1/2만원','1e5원','35000원 / 40000원']){
+  assert.equal(context.parseKoreanAmount(value),'',value);
+  const thread=`국민은행\n123-456-789012\n${value}`;
+  assert.equal(context.parseOne(thread).items[0].amount,'',thread);
+ }
+});
+test('manual edits use the same amount checks as extraction',()=>{
+ for(const value of ['-35000','1.5만원','35,00원','35,00','₩-35000']){
+  const amount=context.editedAmount(value);
+  assert.ok(context.validate({bank:'국민은행',account:'123456789012',amount}).includes('금액 확인'),value);
+ }
+ for(const value of ['35000','35,000','35,000원','3만 5천원'])assert.equal(context.editedAmount(value),'35000');
+});
+test('bank validation accepts known aliases and rejects arbitrary names',()=>{
+ for(const [bank,want] of [['KB','국민은행'],['국민은행','국민은행'],[' keb하나 ','하나은행'],['NH','농협은행'],['iM뱅크','iM뱅크']]){
+  assert.equal(context.canonicalBank(bank),want);
+  assert.ok(!context.validate({bank,account:'123456789012',amount:'35000'}).includes('은행명 확인'));
+ }
+ for(const bank of ['', '없는은행','국민은행오타'])assert.ok(context.validate({bank,account:'123456789012',amount:'35000'}).includes('은행명 확인'));
+});
+test('splits preserve totals and stop before allocating more than 100 rows',()=>{
+ for(const amount of ['100000000','100000001','120000000','10000000000']){
+  const rows=context.expandTransfer({amount});
+  assert.ok(rows.length<=100);
+  assert.equal(rows.reduce((sum,r)=>sum+BigInt(r.amount),0n),BigInt(amount));
+  assert.ok(rows.every(r=>Number(r.amount)<=100000000));
+ }
+ for(const amount of ['10000000001','9007199254740991'])assert.throws(()=>run(`expandTransfer({amount:'${amount}'})`),/100건/);
+ assert.throws(()=>run("expandTransfers([{amount:'10000000000'},{amount:'1'}])"),/100건/);
+});
+test('automatic split duplicates are allowed while independent duplicates are blocked',()=>{
+ run("data=expandTransfer({bank:'국민은행',account:'123456789012',amount:'200000000',plate:''})");
+ assert.equal(run('data.every(row=>validate(row).length===0)'),true);
+ run("data.push({...data[0],splitGroup:''})");
+ assert.equal(run("validate(data[2]).includes('동일 계좌·금액·차량번호 중복')"),true);
+ run('data=[]');
+});
